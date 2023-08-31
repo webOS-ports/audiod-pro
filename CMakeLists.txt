@@ -96,6 +96,7 @@ include_directories(src/modules/lunaEventSubscriber)
 include_directories(src/modules/playbackManager)
 include_directories(src/modules/trackManager)
 include_directories(src/modules/audioEffectManager)
+include_directories(src/modules/phoneManager)
 include_directories(include/public/)
 
 #Please check these header files again
