@@ -17,9 +17,9 @@
 #ifndef _TIMER_H_
 #define _TIMER_H_
 
-#include "scenario.h"
+#include "moduleInterface.h"
 
-class TimerScenarioModule : public ScenarioModule
+class TimerScenarioModule : public ModuleInterface
 {
 public:
     TimerScenarioModule();
@@ -28,7 +28,7 @@ public:
     virtual void    programMuted();
     virtual bool    setMuted (bool muted);
     void            programTimerVolumes(bool ramp);
-    void            onSinkChanged (EVirtualSink sink, EControlEvent event, ESinkType p_eSinkType);
+    //void            onSinkChanged (EVirtualSink sink, EControlEvent event, ESinkType p_eSinkType);
     bool getTimerOn ();
     void setTimerOn (bool state);
 

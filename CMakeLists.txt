@@ -137,6 +137,13 @@ SET (modules_files
         src/modules/trackManager/trackManager.cpp
         src/modules/deviceManager/deviceConfigReader.cpp
         src/modules/audioEffectManager/audioEffectManager.cpp
+#        src/modules/phoneManager/vvm.cpp
+#        src/modules/phoneManager/phone.cpp
+#        src/modules/phoneManager/timer.cpp
+#        src/modules/phoneManager/dtmf.cpp
+#        src/modules/phoneManager/tonegenerator.cpp
+        src/modules/phoneManager/vibrate.cpp
+        src/modules/phoneManager/state.cpp
     )
 
     add_definitions(-DDEVICE_NAME="Unknown")

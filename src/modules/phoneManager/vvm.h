@@ -17,9 +17,9 @@
 #ifndef _Vvm_H_
 #define _Vvm_H_
 
-#include "scenario.h"
+#include "moduleInterface.h"
 
-class VvmScenarioModule : public ScenarioModule
+class VvmScenarioModule : public ModuleInterface
 {
 public:
    VvmScenarioModule();
@@ -49,19 +49,19 @@ public:
 
 private:
     // external users should use startVvm()
-    bool           makeCurrent()        { return ScenarioModule::makeCurrent(); }
+//    bool           makeCurrent()        { return ScenarioModule::makeCurrent(); }
 
     bool    mVvmActive;
     bool   mVvmEnabled;
    bool    mScoUp;
 
-   Volume    mFrontSpeakerVolume;
-   Volume    mHeadsetVolume;
-   Volume    mBluetoothVolume;
+   int    mFrontSpeakerVolume;
+   int    mHeadsetVolume;
+   int    mBluetoothVolume;
 
-    Volume   mFrontMicGain;
-    Volume   mHeadsetMicGain;
-    Volume   mBluetoothSCOMicGain;
+    int   mFrontMicGain;
+    int   mHeadsetMicGain;
+    int   mBluetoothSCOMicGain;
 };
 
 VvmScenarioModule * getVvmModule();

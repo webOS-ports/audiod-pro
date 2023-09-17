@@ -24,7 +24,8 @@
 #include "messageUtils.h"
 #include "main.h"
 #include "vibrate.h"
-#include "AudioDevice.h"
+#include "audioMixer.h"
+// #include "AudioDevice.h"
 #include "state.h"
 #include "utils.h"
 #include "messageUtils.h"
@@ -101,16 +102,17 @@ _fakeBuzz(gpointer data)
 void
 VibrateDevice::fakeBuzz(int runningCount)
 {
-    if (mFakeBuzzRunning)
+    AudioMixer* audioMixer = AudioMixer::getAudioMixerInstance();
+    if (audioMixer && mFakeBuzzRunning)
     {
         if (++runningCount < 3)
         {
-               gAudioMixer.playSystemSound ("ringtone_buzz_short", eeffects);
+            audioMixer->playSystemSound ("ringtone_buzz_short", eeffects);
             g_timeout_add (1000, _fakeBuzz, gpointer(runningCount));
         }
         else
         {
-            gAudioMixer.playSystemSound ("ringtone_buzz", eeffects);
+            audioMixer->playSystemSound ("ringtone_buzz", eeffects);
             g_timeout_add (2000, _fakeBuzz, 0);
         }
     }

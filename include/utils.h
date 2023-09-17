@@ -20,10 +20,10 @@
 
 #include <glib.h>
 #include <luna-service2/lunaservice.h>
-#include <pulse/module-palm-policy.h>
+#include "module-palm-policy-default.h"
 #include "log.h"
 #include "ConstString.h"
-#include <pulse/module-palm-policy-tables.h>
+#include "module-palm-policy-tables-default.h"
 #include <map>
 #include <string>
 #include <vector>

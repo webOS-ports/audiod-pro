@@ -21,7 +21,6 @@
 #include <string>
 #include <pbnjson.h>
 #include <pbnjson.hpp>
-#include <pulse/module-palm-policy.h>
 #include "utils.h"
 #define DEVICE_ROUTING_CONFIG "audiod_device_routing_config.json"
 using namespace std;

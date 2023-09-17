@@ -17,9 +17,10 @@
 #ifndef _PHONE_H_
 #define _PHONE_H_
 
-#include "scenario.h"
+#include "moduleInterface.h"
+#include "audioMixer.h"
 
-class PhoneScenarioModule : public ScenarioModule
+class PhoneScenarioModule : public ModuleInterface
 {
 public:
     PhoneScenarioModule();
@@ -30,7 +31,7 @@ public:
     virtual void    programMuted();
     virtual void    programMuse(bool enable);
     virtual void    programHac (bool enable);
-    virtual void    onSinkChanged(EVirtualSink sink, EControlEvent event, ESinkType p_eSinkType);
+//    virtual void    onSinkChanged(EVirtualAudioSink sink, EControlEvent event, ESinkType p_eSinkType);
 
     virtual void    onActivating();
     virtual void    onDeactivated();
@@ -38,13 +39,13 @@ public:
     virtual int        adjustAlertVolume(int volume, bool alertStarting = false);
 
 protected:
-    Volume            mFrontSpeakerVolume;
-    Volume            mBackSpeakerVolume;
-    Volume            mHeadsetVolume;
-    Volume            mBluetoothVolume;
-    Volume            mTTYFullVolume;
-    Volume            mTTYHCOVolume;
-    Volume            mTTYVCOVolume;
+    int            mFrontSpeakerVolume;
+    int            mBackSpeakerVolume;
+    int            mHeadsetVolume;
+    int            mBluetoothVolume;
+    int            mTTYFullVolume;
+    int            mTTYHCOVolume;
+    int            mTTYVCOVolume;
 };
 
 

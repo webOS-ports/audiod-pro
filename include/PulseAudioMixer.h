@@ -27,7 +27,6 @@
 #include "log.h"
 #include "main.h"
 #include <audiodTracer.h>
-#include <pulse/module-palm-policy-tables.h>
 #include "mixerInterface.h"
 
 //Implementation of PulseMixer using Pulse as backend

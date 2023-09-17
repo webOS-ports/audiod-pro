@@ -21,7 +21,7 @@
 #include <string>
 #include <pbnjson.h>
 #include <pbnjson.hpp>
-#include <pulse/module-palm-policy.h>
+// #include <pulse/module-palm-policy.h>
 #include "utils.h"
 #define VOLUME_POLICY_CONFIG "audiod_sink_volume_policy_config.json"
 #define SOURCE_VOLUME_POLICY_CONFIG "audiod_source_volume_policy_config.json"
