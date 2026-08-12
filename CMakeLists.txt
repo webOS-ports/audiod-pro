@@ -64,6 +64,12 @@ pkg_check_modules(PULSE_SIMPLE REQUIRED libpulse-simple)
 include_directories(${PULSE_INCLUDE_DIRS})
 webos_add_compiler_flags(ALL ${PULSE_CFLAGS_OTHER})
 
+# palmLegacyManager drives call routing through its own pa_context, attached to
+# audiod's GMainContext.
+pkg_check_modules(PULSE_GLIB REQUIRED libpulse-mainloop-glib)
+include_directories(${PULSE_GLIB_INCLUDE_DIRS})
+webos_add_compiler_flags(ALL ${PULSE_GLIB_CFLAGS_OTHER})
+
 pkg_check_modules(LTTNG_UST lttng-ust)
 include_directories(${LTTNG_UST_INCLUDE_DIRS})
 webos_add_compiler_flags(ALL ${LTTNG_UST_CFLAGS_OTHER})
@@ -170,6 +176,7 @@ target_link_libraries(audiod     ${GLIB2_LDFLAGS}
                 ${LTTNG_UST_LDFLAGS}
                 ${URCU_BP_LDFLAGS}
                 ${PULSE_SIMPLE_LDFLAGS}
+                ${PULSE_GLIB_LDFLAGS}
                 pthread
                 rt
                 dl
@@ -190,6 +197,7 @@ target_link_libraries(audiod     ${GLIB2_LDFLAGS}
                 ${LIBPBNJSON_LDFLAGS}
                 ${PULSE_LDFLAGS}
                 ${PULSE_SIMPLE_LDFLAGS}
+                ${PULSE_GLIB_LDFLAGS}
                 pthread
                 rt
                 dl

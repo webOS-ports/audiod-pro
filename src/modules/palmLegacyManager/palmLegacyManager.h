@@ -21,6 +21,9 @@
 
 #include <string>
 
+#include <pulse/pulseaudio.h>
+#include <pulse/glib-mainloop.h>
+
 #include "audioMixer.h"
 #include "moduleFactory.h"
 #include "moduleManager.h"
@@ -119,8 +122,37 @@ class PalmLegacyManager : public ModuleInterface
                                                            &PalmLegacyManager::CreateObject));
         }
 
+        /* Call routing is done directly against PulseAudio rather than through
+         * module-palm-policy: the policy module routes streams between virtual
+         * sinks, but putting a phone call through the modem needs the ALSA card
+         * moved onto its voicecall profile, which only libpulse can do.
+         * PulseAudioLink keeps its context private, so this module opens its
+         * own -- the same thing audio-service does today. */
+        pa_glib_mainloop *mPaMainloop;
+        pa_context *mPaContext;
+        bool mPaReady;
+
+        /* One in-flight routing request. Heap-allocated because the PulseAudio
+         * card/sink/source walk is a chain of async callbacks. */
+        struct RoutingRequest
+        {
+            PalmLegacyManager *self;
+            ECallMode mode;
+            EPhoneRoute route;
+        };
+
         bool registerLegacyService(const char *serviceName, LSHandle **handle);
         bool registerLegacyCategories(LSHandle *handle);
+
+        bool connectToPulse();
+
+        static void paContextStateCb(pa_context *c, void *userdata);
+        static void paCardInfoCb(pa_context *c, const pa_card_info *info, int eol, void *userdata);
+        static void paCardProfileSetCb(pa_context *c, int success, void *userdata);
+        static void paSinkInfoCb(pa_context *c, const pa_sink_info *info, int eol, void *userdata);
+        static void paSinkPortSetCb(pa_context *c, int success, void *userdata);
+        static void paSourceInfoCb(pa_context *c, const pa_source_info *info, int eol, void *userdata);
+        static void paSourcePortSetCb(pa_context *c, int success, void *userdata);
 
         /* Push mCallMode to the hardware. Idempotent: returns early when the
          * mode has not changed since the last successful application. */
