@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.webosports.service.audio
+Exec=/usr/sbin/audiod
+Type=static

@@ -1,16 +1,64 @@
 {
-    "exeName":"/usr/sbin/audiod",
-    "allowedNames": ["com.webos.service.audio"],
+    "exeName": "/usr/sbin/audiod",
+    "allowedNames": [
+        "com.webos.service.audio",
+        "com.palm.audio",
+        "org.webosports.service.audio"
+    ],
     "type": "regular",
-    "trustLevel" : "oem",
+    "trustLevel": "oem",
     "permissions": [
         {
-            "service":"com.webos.service.audio",
-            "outbound":["com.webos.service.audiooutput",
-                        "com.webos.service.bluetooth2",
-                        "com.webos.settingsservice",
-                        "com.webos.service.settings",
-                        "com.webos.service.pdm"]
+            "service": "com.webos.service.audio",
+            "outbound": [
+                "com.webos.service.audiooutput",
+                "com.webos.service.bluetooth2",
+                "com.webos.settingsservice",
+                "com.webos.service.settings",
+                "com.webos.service.pdm"
+            ]
+        },
+        {
+            "service": "com.palm.audio",
+            "outbound": [
+                "com.palm.bluetooth",
+                "com.palm.display",
+                "com.palm.power",
+                "com.palm.systemmanager",
+                "com.palm.systemservice",
+                "com.palm.telephony",
+                "com.webos.keys",
+                "com.webos.media",
+                "com.webos.service.audiooutput",
+                "com.webos.service.bluetooth2",
+                "com.webos.service.pdm",
+                "com.webos.service.settings",
+                "com.webos.service.systemservice",
+                "com.webos.settingsservice",
+                "com.webos.surfacemanager-cardshell",
+                "org.webosports.luna"
+            ]
+        },
+        {
+            "service": "org.webosports.service.audio",
+            "outbound": [
+                "com.palm.bluetooth",
+                "com.palm.display",
+                "com.palm.power",
+                "com.palm.systemmanager",
+                "com.palm.systemservice",
+                "com.palm.telephony",
+                "com.webos.keys",
+                "com.webos.media",
+                "com.webos.service.audiooutput",
+                "com.webos.service.bluetooth2",
+                "com.webos.service.pdm",
+                "com.webos.service.settings",
+                "com.webos.service.systemservice",
+                "com.webos.settingsservice",
+                "com.webos.surfacemanager-cardshell",
+                "org.webosports.luna"
+            ]
         }
     ]
 }
