@@ -17,6 +17,13 @@
 
 #include "PulseAudioLink.h"
 
+// pa_simple_cork() is an LG addition to libpulse-simple; it exists only in
+// webosose/pulseaudio-webos, and LuneOS builds against upstream PulseAudio.
+// Declaring it weak keeps audiod buildable either way: where the runtime
+// libpulse-simple exports the symbol, pause()/resume() below use it, and where
+// it does not the pointer is null and they report the request as unsupported.
+extern "C" int pa_simple_cork(pa_simple *s, int cork, int *error) __attribute__((weak));
+
 #define DEFAULT_SAMPLE_RATE 44100
 #define DEFAULT_CHANNELS 1
 #define DEFAULT_SAMPLE_FORMAT "PA_SAMPLE_S16LE"
@@ -966,6 +973,11 @@ bool PlaybackThread::pause()
     PM_LOG_DEBUG(" PlaybackThread::pause");
     if (playbackState != "playing")
         return false;
+    if (!pa_simple_cork) {
+        PM_LOG_ERROR(MSGID_PULSE_LINK, INIT_KVCOUNT,\
+                "PulseAudioLink::pause: libpulse-simple has no pa_simple_cork, cannot pause playback");
+        return false;
+    }
     if (pa_simple_cork(mStream, 1, NULL) < 0) {
         PM_LOG_ERROR(MSGID_PULSE_LINK, INIT_KVCOUNT,\
                 "PulseAudioLink::pause: Failed to pause stream");
@@ -987,6 +999,11 @@ bool PlaybackThread::resume()
     PM_LOG_DEBUG(" PlaybackThread::resume");
     if (playbackState != "paused")
         return false;
+    if (!pa_simple_cork) {
+        PM_LOG_ERROR(MSGID_PULSE_LINK, INIT_KVCOUNT,\
+                "PulseAudioLink::resume: libpulse-simple has no pa_simple_cork, cannot resume playback");
+        return false;
+    }
     if (pa_simple_cork(mStream, 0, NULL) < 0) {
         PM_LOG_ERROR(MSGID_PULSE_LINK, INIT_KVCOUNT,\
                 "PulseAudioLink::resume: Failed to resume stream");
