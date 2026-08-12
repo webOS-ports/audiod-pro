@@ -94,6 +94,7 @@ include_directories(src/modules/lunaEventSubscriber)
 include_directories(src/modules/playbackManager)
 include_directories(src/modules/trackManager)
 include_directories(src/modules/audioEffectManager)
+include_directories(src/modules/palmLegacyManager)
 include_directories(include/public/)
 
 #Please check these header files again
@@ -117,6 +118,7 @@ if (AUDIOD_TEST_API)
 endif(AUDIOD_TEST_API)
 
 SET (modules_files
+        src/modules/palmLegacyManager/palmLegacyManager.cpp
         src/modules/lunaEventSubscriber/lunaEventSubscriber.cpp
         src/modules/masterVolumeManager/OSEMasterVolumeManager.cpp
         src/modules/deviceManager/udevDeviceManager.cpp
