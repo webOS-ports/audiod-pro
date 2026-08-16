@@ -90,6 +90,32 @@ bool DeviceManager::loadInternalCard (utils::CARD_INFO_T& cardInfo)
 {
     PM_LOG_INFO(MSGID_DEVICE_MANAGER, INIT_KVCOUNT, "loadInternalCard cardInfo.isConnected = %d",cardInfo.isConnected);
     bool ret = false;
+    if (cardInfo.type == "preloaded")
+    {
+        // The sink already exists in PulseAudio and something else owns the
+        // hardware - module-droid-card on a Halium device, where the Android HAL
+        // has to keep the card because it is what sets up the mixer paths.
+        // Loading an ALSA sink here would fight it for the PCM. Registering is
+        // enough: routing is by sink name, so the router only needs a sink of
+        // this name to exist.
+        //
+        // Nothing else will report it as connected, either. Normally PulseAudio
+        // answers the load with a device-connection reply and that is what tells
+        // audioRouter a device exists and makes it route the virtual sinks onto
+        // it, so announce it here or the device is registered but never routed
+        // to, and every stream stays on the virtual sink it was created on.
+        if (!cardInfo.isConnected)
+        {
+            PM_LOG_INFO(MSGID_DEVICE_MANAGER, INIT_KVCOUNT,\
+                "sink %s is preloaded, registering without loading a card",\
+                cardInfo.name.c_str());
+            cardInfo.isConnected = true;
+            mObjAudioMixer->callBackDeviceConnectionStatus(cardInfo.name,\
+                cardInfo.name, "", utils::eDeviceConnected,\
+                utils::ePulseMixer, cardInfo.isOutput);
+        }
+        return true;
+    }
     if (cardInfo.isConnected == false)
     {
         PM_LOG_DEBUG("calling load internal card with parameters cardno :%d,deviceno:%d,status:%d,isoutput:%d,name:%s",\
@@ -817,6 +843,32 @@ bool DeviceManager::addInternalCard(int cardNumber, std::string cardId, std::str
     {
         bool deviceFoundInlist = false;
         it = internalDevices.find(cardId);
+        if (it == internalDevices.end() && !cardName.empty())
+        {
+            // PDM does not report a card id on every platform - it arrives
+            // empty on Halium devices, where the card is described by name
+            // only - so fall back to matching the name before giving up.
+            PM_LOG_INFO(MSGID_DEVICE_MANAGER, INIT_KVCOUNT,\
+                "no config entry for cardId '%s', trying cardName '%s'",\
+                cardId.c_str(), cardName.c_str());
+            it = internalDevices.find(cardName);
+        }
+        if (it == internalDevices.end())
+        {
+            // Last resort: an entry named "*" describes whichever internal card
+            // was found. Naming the card is only worth the trouble when a device
+            // has more than one and the wrong one could win - a machine with a
+            // codec and an HDMI output, say. Where there is one internal card,
+            // or where the sink is owned by something else and audiod only has
+            // to know its name, the card it is called by carries no information
+            // and demanding it means every machine needs a config file written
+            // from a booted device before it makes a sound.
+            it = internalDevices.find("*");
+            if (it != internalDevices.end())
+                PM_LOG_INFO(MSGID_DEVICE_MANAGER, INIT_KVCOUNT,\
+                    "no entry for cardId '%s' or cardName '%s', using the "
+                    "wildcard entry", cardId.c_str(), cardName.c_str());
+        }
         if (it != internalDevices.end())
         {
             for (auto& deviceInfo : it->second)
