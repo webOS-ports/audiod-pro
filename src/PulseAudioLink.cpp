@@ -127,6 +127,24 @@ struct PlaySampleDeferData {
     pa_context* pacontext;
 };
 
+static void PlaySampleResultCB(pa_context *c, int success, void *userdata)
+{
+    char *samplename = (char *)userdata;
+    if (!success)
+    {
+        PM_LOG_ERROR(MSGID_PULSE_LINK, INIT_KVCOUNT,
+            "PulseAudioLink::play: sample '%s' did not play: %s",
+            samplename ? samplename : "(null)",
+            pa_strerror(pa_context_errno(c)));
+    }
+    else
+    {
+        PM_LOG_DEBUG("PulseAudioLink::play: sample '%s' played",
+            samplename ? samplename : "(null)");
+    }
+    free(samplename);
+}
+
 static void PlaySampleDeferCB(pa_mainloop_api *a, pa_defer_event *e, void *userdata)
 {
     PlaySampleDeferData* data  = (PlaySampleDeferData*)userdata;
@@ -147,14 +165,32 @@ static void PlaySampleDeferCB(pa_mainloop_api *a, pa_defer_event *e, void *userd
         //gAudioDevice.prepareHWForPlayback();
     }
 
+    /*
+     * Report failures. pa_context_play_sample() was called with no callback, so
+     * a sample that is not in the server cache - or a sink that does not exist -
+     * failed silently while play() still returned true to its caller. That is
+     * indistinguishable from working, and it is how "the volume keys are silent
+     * but audiod reports success" presents.
+     *
+     * Note the sample is uploaded asynchronously by the preload() just above, so
+     * "no such entry" here means the upload had not finished yet rather than the
+     * file being missing - playFeedback already fopen()s it before getting here.
+     */
     pa_operation * op = pa_context_play_sample(data->pacontext,
                                                data->samplename,
                                                data->sink,
                                                PA_VOLUME_NORM,
-                                               NULL, NULL);
+                                               PlaySampleResultCB,
+                                               strdup(data->samplename));
     if (op)
     {
         pa_operation_unref(op);
+    }
+    else
+    {
+        PM_LOG_ERROR(MSGID_PULSE_LINK, INIT_KVCOUNT,
+            "PulseAudioLink::play: play_sample('%s' -> '%s') could not be issued: %s",
+            name, data->sink, pa_strerror(pa_context_errno(data->pacontext)));
     }
     free(data);
     a->defer_free(e);
