@@ -341,10 +341,16 @@ void PalmLegacyManager::paContextStateCb(pa_context *c, void *userdata)
             self->mPaReady = true;
             PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
                 "Connected to PulseAudio for call routing");
-            /* A call may already have been set up while PulseAudio was still
-             * coming up -- re-apply so the hardware matches our state. */
-            if (self->mCallMode != eCallMode_None)
-                self->applyCallRouting(self->mCallMode, self->mPhoneRoute);
+            /* Assert routing for our current state so the hardware matches
+             * audiod's view whenever we (re)connect. PulseAudio outlives an
+             * audiod restart and keeps whatever card profile / sink port the
+             * previous instance left -- which can be a bare 'voicecall' profile
+             * or a parked output port, giving no sound. Applying even the idle
+             * (eCallMode_None) routing here restores the default profile and a
+             * real output port (speaker/earpiece); it is idempotent, so it is a
+             * no-op when the hardware is already correct. This also re-pushes an
+             * in-progress call's routing if PulseAudio came up mid-call. */
+            self->applyCallRouting(self->mCallMode, self->mPhoneRoute);
             break;
         case PA_CONTEXT_FAILED:
         case PA_CONTEXT_TERMINATED:
@@ -1132,6 +1138,7 @@ bool PalmLegacyManager::_telephonyAnswered(LSHandle *sh, LSMessage *message, voi
 
 bool PalmLegacyManager::_playDTMF(LSHandle *sh, LSMessage *message, void *ctx)
 {
+    PalmLegacyManager *self = getPalmLegacyManagerInstance();
     LSMessageJsonParser msg(message, SCHEMA_1(REQUIRED(name, string)));
     if (!msg.parse(__FUNCTION__, sh))
         return true;
@@ -1139,11 +1146,15 @@ bool PalmLegacyManager::_playDTMF(LSHandle *sh, LSMessage *message, void *ctx)
     std::string name;
     msg.get("name", name);
 
-    /* Tone synthesis has not been ported from the Palm-era tonegenerator yet,
-     * so the dialpad is silent rather than wrong. Kept as a real method so
-     * com.palm.app.phone's Dialpad gets a success rather than a bus error. */
-    PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
-        "playDTMF(%s): tone generation not yet implemented", name.c_str());
+    /* Drive audiod's built-in DTMF tone generator as a short one-shot beep
+     * (PulseAudioMixer::playOneshotDtmf -> fixed-duration PulseDtmfGenerator),
+     * so each playDTMF call is one dialpad tone that stops on its own -- no
+     * paired stopDTMF required and no risk of a stuck tone. name is a single
+     * dialpad character "0".."9", "*" or "#" (see IdToDtmf). There is no
+     * dedicated DTMF virtual sink in the EVirtualSink enum, so route the keypad
+     * tone through the feedback sink, as with the other UI feedback sounds. */
+    if (self && self->mObjAudioMixer)
+        self->mObjAudioMixer->playOneshotDtmf(name.c_str(), efeedback);
 
     CLSError lserror;
     if (!LSMessageReply(sh, message, STANDARD_JSON_SUCCESS, &lserror))
@@ -1153,6 +1164,11 @@ bool PalmLegacyManager::_playDTMF(LSHandle *sh, LSMessage *message, void *ctx)
 
 bool PalmLegacyManager::_stopDTMF(LSHandle *sh, LSMessage *message, void *ctx)
 {
+    PalmLegacyManager *self = getPalmLegacyManagerInstance();
+
+    if (self && self->mObjAudioMixer)
+        self->mObjAudioMixer->stopDtmf();
+
     CLSError lserror;
     if (!LSMessageReply(sh, message, STANDARD_JSON_SUCCESS, &lserror))
         lserror.Print(__FUNCTION__, __LINE__);

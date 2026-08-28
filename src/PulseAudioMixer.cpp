@@ -1446,7 +1446,16 @@ void PulseAudioMixer::playOneshotDtmf(const char *snd, EVirtualAudioSink sink)
 
 void PulseAudioMixer::playOneshotDtmf(const char *snd, const char* sink)
 {
-    PM_LOG_INFO(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT, "PulseAudioMixer::playOneshotDtmf");
+    PM_LOG_DEBUG("PulseAudioMixer::playOneshotDtmf");
+    int tone;
+    if ((tone=IdToDtmf(snd))<0) return;
+    /* Fixed-duration tone that fades out and stops on its own, so a single
+     * playOneshotDtmf() call is one dialpad beep -- no paired stop needed, and
+     * a missed release can never leave a tone stuck on. Re-triggering the same
+     * tone is allowed (pressing a key twice beeps twice). */
+    stopDtmf();
+    mCurrentDtmf = new PulseDtmfGenerator((Dtmf)tone, 200 /* ms */);
+    mPulseLink.play(mCurrentDtmf, sink);
 }
 
 void PulseAudioMixer::playDtmf(const char *snd, EVirtualAudioSink sink)
