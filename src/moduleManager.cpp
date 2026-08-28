@@ -125,11 +125,20 @@ bool ModuleManager::removeModules()
         "ModuleManager: removeModules");
     if (mModuleFactory)
     {
+        /*
+         * erase(key) destroys the element this iterator points at, so the ++it
+         * that follows walks an invalidated iterator: undefined behaviour. In
+         * practice the next pass reads a garbage ModuleInterface*, the null
+         * check in UnRegister() passes because garbage is rarely null, and the
+         * virtual deInitialize() call crashes - audiod segfaults on every
+         * shutdown once more than one module is loaded. Let erase() hand back
+         * the next valid iterator instead.
+         */
         std::map<std::string, ModuleInterface*>::iterator it = mModuleHandlersMap.begin();
-        for ( ; it != mModuleHandlersMap.end(); ++it)
+        while (it != mModuleHandlersMap.end())
         {
             mModuleFactory->UnRegister(it->first, it->second);
-            mModuleHandlersMap.erase(it->first);
+            it = mModuleHandlersMap.erase(it);
         }
     }
     return true;
