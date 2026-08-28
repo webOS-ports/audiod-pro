@@ -102,6 +102,16 @@ bool SystemSoundsManager::_playFeedback(LSHandle *lshandle, LSMessage *message, 
     }
 
     fp = fopen(filename, "r");
+    if (!fp)
+    {
+        /*
+         * Same fallback as PulseAudioLink::play(): 22 of the shipped samples have
+         * no -ondemand suffix, including the AdjustVolume one the volume keys use,
+         * and rejecting those here is what made the keys silent.
+         */
+        if (snprintf(filename, size, SYSTEMSOUNDS_PATH "%s.pcm", name.c_str()) < size)
+            fp = fopen(filename, "r");
+    }
     free(filename);
     filename= NULL;
     if (!fp){

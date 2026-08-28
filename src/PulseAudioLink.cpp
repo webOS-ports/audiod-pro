@@ -15,6 +15,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 
+#include <unistd.h>
 #include "PulseAudioLink.h"
 
 // pa_simple_cork() is an LG addition to libpulse-simple; it exists only in
@@ -204,6 +205,21 @@ bool PulseAudioLink::play(const char * samplename, const char * sink)
         return false;
     path += samplename;
     path += "-ondemand.pcm";
+
+    /*
+     * Not every sample ships with the -ondemand suffix. The LuneOS sound set has
+     * 88 files that carry it and 22 that do not - AdjustVolume.pcm, the one the
+     * volume keys ask for, among them. Fall back to the plain name rather than
+     * silently playing nothing.
+     */
+    if (access(path.c_str(), R_OK) != 0)
+    {
+        std::string plain = SYSTEMSOUNDS_PATH;
+        plain += samplename;
+        plain += ".pcm";
+        if (access(plain.c_str(), R_OK) == 0)
+            path = plain;
+    }
 
     preload(samplename, DEFAULT_SAMPLE_FORMAT, DEFAULT_SAMPLE_RATE, DEFAULT_CHANNELS, path.c_str());
 
