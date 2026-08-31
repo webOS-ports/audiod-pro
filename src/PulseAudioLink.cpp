@@ -16,6 +16,8 @@
 
 
 #include <unistd.h>
+#include <vector>
+
 #include "PulseAudioLink.h"
 
 // pa_simple_cork() is an LG addition to libpulse-simple; it exists only in
@@ -227,6 +229,33 @@ bool PulseAudioLink::play(const char * samplename, const char * sink)
     //we lose connection (ie, pulseaudio crashed)
     if (!checkConnection())
         return false;
+
+    /* If the sample is not in the server's cache yet, queue the play instead of
+     * issuing it now. pa_context_play_sample() on a sample that has not
+     * finished uploading fails with "no such entry", and since the upload is
+     * asynchronous that is what happened to the first play of every sample.
+     * onSamplePreloaded() issues whatever is queued here as soon as the server
+     * acknowledges the upload. */
+    {
+        std::lock_guard<std::mutex> guard(mSoundsLock);
+        if (mLoadedSounds.find(samplename) == mLoadedSounds.end())
+        {
+            if (mLoadingSounds.find(samplename) != mLoadingSounds.end())
+            {
+                mPendingPlays.insert(std::make_pair(std::string(samplename),
+                                                    std::string(sink ? sink : "")));
+                PM_LOG_DEBUG("PulseAudioLink::play: '%s' still uploading, queued for '%s'",
+                             samplename, sink ? sink : "");
+                return true;
+            }
+            /* Neither loaded nor loading: the preload above could not start
+             * (missing file, or no connection). Nothing to play. */
+            PM_LOG_ERROR(MSGID_PULSE_LINK, INIT_KVCOUNT,
+                "PulseAudioLink::play: '%s' is not in the sample cache and no upload "
+                "is in flight; is %s readable?", samplename, path.c_str());
+            return false;
+        }
+    }
 
     PlaySampleDeferData* data = (PlaySampleDeferData*)malloc(sizeof(PlaySampleDeferData));
     if (data)
@@ -504,6 +533,7 @@ public:
         mainloop = NULL;
         context = NULL;
         s = NULL;
+        link = NULL;
     }
 
     ~PreloadDeferCBData()
@@ -527,6 +557,7 @@ public:
     pa_mainloop* mainloop;
     pa_context* context;
     pa_stream *s;
+    PulseAudioLink* link;
 };
 
 static void preload_stream_state_cb(pa_stream * s, void *userdata)
@@ -552,6 +583,8 @@ static void preload_stream_state_cb(pa_stream * s, void *userdata)
 
             snd->loading = false;
             snd->isSuccess = false;
+            if (data->link)
+                data->link->onSamplePreloaded(snd->samplename, false);
             unref = true;
             break;
 
@@ -560,6 +593,8 @@ static void preload_stream_state_cb(pa_stream * s, void *userdata)
                 "stream_state_cb: Successfully pre-loaded '%s'", snd->samplename);
             snd->loading = false;
             snd->isSuccess = true;
+            if (data->link)
+                data->link->onSamplePreloaded(snd->samplename, true);
             unref = true;
             break;
    }
@@ -624,9 +659,17 @@ void PulseAudioLink::preload(const char * samplename, const char * format, int r
 {
     // is the sound file loaded?
     PMTRACE_FUNCTION;
-    if (strlen(samplename) >= kSampleNameMaxSize ||
-                              mLoadedSounds.find(samplename) != mLoadedSounds.end())
+    if (strlen(samplename) >= kSampleNameMaxSize)
         return;
+
+    {
+        std::lock_guard<std::mutex> guard(mSoundsLock);
+        /* Already in the server's cache, or an upload for it is already in
+         * flight -- either way there is nothing to start here. */
+        if (mLoadedSounds.find(samplename) != mLoadedSounds.end() ||
+            mLoadingSounds.find(samplename) != mLoadingSounds.end())
+            return;
+    }
 
     struct stat fileStat;
     FILE* f = fopen(path, "r");
@@ -651,6 +694,7 @@ void PulseAudioLink::preload(const char * samplename, const char * format, int r
             return;
         }
         PreloadDeferCBData* data = new PreloadDeferCBData();
+        data->link = this;
         data->snd.file = f;
         strncpy(data->snd.samplename, samplename, sizeof(data->snd.samplename)-1);
         data->snd.length = fileStat.st_size;
@@ -706,11 +750,62 @@ void PulseAudioLink::preload(const char * samplename, const char * format, int r
         return;
     }
 
-    // success or failure, no need to try again
-    if (mLoadedSounds.find(samplename) == mLoadedSounds.end())
-        mLoadedSounds.insert(samplename);
-    else
-        PM_LOG_DEBUG("sample name %s already loaded", samplename);
+    /* Deliberately NOT recorded as loaded here.
+     *
+     * This used to insert into mLoadedSounds as soon as the upload had been
+     * *started*, with the comment "success or failure, no need to try again".
+     * The upload is asynchronous, so that had two consequences: the play_sample
+     * issued immediately afterwards raced the upload and the first play of any
+     * sample was usually dropped with "no such entry", and an upload that
+     * actually failed left the name recorded forever, so that sample stayed
+     * silent for the life of the process and never retried. Between them that
+     * is the "system sounds sometimes work and then stop" behaviour.
+     *
+     * The name is recorded in mLoadingSounds instead, and moves to
+     * mLoadedSounds only when the server acknowledges the upload -- see
+     * onSamplePreloaded(). */
+    std::lock_guard<std::mutex> guard(mSoundsLock);
+    mLoadingSounds.insert(samplename);
+}
+
+/* Called from preload_stream_state_cb on the PulseAudio mainloop thread when an
+ * upload finishes, one way or the other. */
+void PulseAudioLink::onSamplePreloaded(const char *samplename, bool success)
+{
+    if (!samplename)
+        return;
+
+    std::vector<std::string> toPlay;
+    {
+        std::lock_guard<std::mutex> guard(mSoundsLock);
+        mLoadingSounds.erase(samplename);
+
+        if (success)
+            mLoadedSounds.insert(samplename);
+        /* On failure the name is left out of mLoadedSounds, so the next play
+         * of it starts a fresh upload rather than being silent forever. */
+
+        auto range = mPendingPlays.equal_range(samplename);
+        for (auto it = range.first; it != range.second; ++it)
+            toPlay.push_back(it->second);
+        mPendingPlays.erase(samplename);
+    }
+
+    if (!success)
+    {
+        PM_LOG_ERROR(MSGID_PULSE_LINK, INIT_KVCOUNT,
+            "onSamplePreloaded: upload of '%s' failed; dropping %zu queued play(s), "
+            "will retry the upload on the next play", samplename, toPlay.size());
+        return;
+    }
+
+    PM_LOG_INFO(MSGID_PULSE_LINK, INIT_KVCOUNT,
+        "onSamplePreloaded: '%s' is in the cache; issuing %zu queued play(s)",
+        samplename, toPlay.size());
+
+    /* Issue the plays that arrived while the upload was in flight. */
+    for (const auto &sink : toPlay)
+        play(samplename, sink.c_str());
 }
 
 void* PulseAudioLink::pathread_func(void* p) {

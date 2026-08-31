@@ -20,6 +20,8 @@
 #include <pulse/pulseaudio.h>
 #include <pulse/simple.h>
 #include <set>
+#include <map>
+#include <mutex>
 #include <string>
 #include "log.h"
 #include "utils.h"
@@ -204,7 +206,28 @@ private:
     pa_context *            mContext;
     pa_mainloop *            mMainLoop;
     bool                    mPulseAudioReady;
+
+    /* Sample-cache bookkeeping.
+     *
+     * Uploading a sample is asynchronous and runs on the PulseAudio mainloop
+     * thread, while play() is called from audiod's own thread, so all three of
+     * these are guarded by mSoundsLock.
+     *
+     * mLoadedSounds holds only samples the server has actually acknowledged.
+     * mLoadingSounds holds uploads still in flight, so a second play of the
+     * same sample does not start a duplicate upload. mPendingPlays holds the
+     * plays that arrived while an upload was in flight; they are issued when it
+     * completes, which is what stops the first play of any sample being
+     * silently dropped. */
     std::set<std::string>    mLoadedSounds;
+    std::set<std::string>    mLoadingSounds;
+    std::multimap<std::string, std::string> mPendingPlays;
+    std::mutex               mSoundsLock;
+
+public:
+    /* Called from the upload's completion callback. */
+    void onSamplePreloaded(const char *samplename, bool success);
+private:
     std::map<std::string, PlaybackThread *> mMapAudioList;
     MixerInterface *mCallback;
     pthread_t mThread;
