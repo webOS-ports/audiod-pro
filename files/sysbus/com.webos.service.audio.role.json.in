@@ -11,11 +11,13 @@
         {
             "service": "com.webos.service.audio",
             "outbound": [
+                "com.palm.telephony",
+                "com.webos.service.audio",
                 "com.webos.service.audiooutput",
                 "com.webos.service.bluetooth2",
-                "com.webos.settingsservice",
+                "com.webos.service.pdm",
                 "com.webos.service.settings",
-                "com.webos.service.pdm"
+                "com.webos.settingsservice"
             ]
         },
         {
