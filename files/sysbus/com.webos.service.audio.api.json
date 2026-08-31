@@ -34,6 +34,7 @@
         "com.palm.audio/phone/setMuted",
         "com.palm.audio/phone/setVolume",
         "com.palm.audio/phone/status",
+        "com.palm.audio/playFeedback",
         "com.palm.audio/ringtone/getVolume",
         "com.palm.audio/ringtone/lockVolumeKeys",
         "com.palm.audio/ringtone/offsetVolume",
@@ -52,6 +53,7 @@
         "com.palm.audio/system/setMuted",
         "com.palm.audio/system/setVolume",
         "com.palm.audio/system/status",
+        "com.palm.audio/systemsounds/playFeedback",
         "com.palm.audio/telephony/answered",
         "com.palm.audio/volumeDown",
         "com.palm.audio/volumeUp",
@@ -84,6 +86,7 @@
         "com.webos.service.audio/setInputVolume",
         "com.webos.service.audio/setSourceInputVolume",
         "com.webos.service.audio/setTrackVolume",
+        "com.webos.service.audio/systemsounds/playFeedback",
         "com.webos.service.audio/unregisterTrack",
         "org.webosports.service.audio/alert/getVolume",
         "org.webosports.service.audio/alert/offsetVolume",
@@ -119,6 +122,7 @@
         "org.webosports.service.audio/phone/setMuted",
         "org.webosports.service.audio/phone/setVolume",
         "org.webosports.service.audio/phone/status",
+        "org.webosports.service.audio/playFeedback",
         "org.webosports.service.audio/ringtone/getVolume",
         "org.webosports.service.audio/ringtone/lockVolumeKeys",
         "org.webosports.service.audio/ringtone/offsetVolume",
@@ -137,6 +141,7 @@
         "org.webosports.service.audio/system/setMuted",
         "org.webosports.service.audio/system/setVolume",
         "org.webosports.service.audio/system/status",
+        "org.webosports.service.audio/systemsounds/playFeedback",
         "org.webosports.service.audio/telephony/answered",
         "org.webosports.service.audio/volumeDown",
         "org.webosports.service.audio/volumeUp",
@@ -152,17 +157,12 @@
         "org.webosports.service.audio/vvm/status"
     ],
     "audio.management": [
-        "com.palm.audio/playFeedback",
-        "com.palm.audio/systemsounds/playFeedback",
         "com.webos.service.audio/controlPlayback",
         "com.webos.service.audio/playSound",
         "com.webos.service.audio/setSoundInput",
         "com.webos.service.audio/setSoundOutput",
         "com.webos.service.audio/soundSettings/setSoundOut",
-        "com.webos.service.audio/systemsounds/playFeedback",
-        "com.webos.service.audio/udev/event",
-        "org.webosports.service.audio/playFeedback",
-        "org.webosports.service.audio/systemsounds/playFeedback"
+        "com.webos.service.audio/udev/event"
     ],
     "audio.query": [
         "com.palm.audio/alert/getVolume",
