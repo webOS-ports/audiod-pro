@@ -19,6 +19,7 @@
 #ifndef _PALM_LEGACY_MANAGER_H_
 #define _PALM_LEGACY_MANAGER_H_
 
+#include <set>
 #include <string>
 #include <vector>
 
@@ -149,6 +150,11 @@ class PalmLegacyManager : public ModuleInterface
         bool mPhoneMuted;
         bool mMicMuted;
         bool mHac;              /* hearing aid compatibility */
+
+        /* Scenarios a caller (or HAC) has taken out of service, by full Palm
+         * scenario name. listScenarios hides them and setCurrentScenario
+         * refuses them, which is what disableScenario meant. */
+        std::set<std::string> mDisabledScenarios;
         bool mVolumeLocked;
         bool mRingerOn;
 
@@ -223,10 +229,18 @@ class PalmLegacyManager : public ModuleInterface
          * /media, /ringtone, /system, /alert, /phone and /vvm alike. */
         static LegacyCategory *categoryFor(LSMessage *message);
         static LegacyCategory *categoryByName(const char *name);
-        static std::vector<std::string> scenariosFor(const LegacyCategory *cat);
+        std::vector<std::string> scenariosFor(const LegacyCategory *cat) const;
         static std::string scenarioName(const LegacyCategory *cat, EPhoneRoute route);
         static bool routeFromScenario(const LegacyCategory *cat, const std::string &scenario,
                                       EPhoneRoute *route);
+
+        /* Hearing-aid compatibility. On Palm hardware this was never a codec
+         * register: AudioDevice::hacSet stored a byte and nothing read it. The
+         * whole observable behaviour is routing policy -- take the back speaker
+         * out of service and force the call to the earpiece, which is the
+         * transducer a hearing aid couples to. Verified against the decompiled
+         * webOS 3.0.5 State::hacSet and audiod-pro Gen 2's state.cpp:604. */
+        void applyHac();
 
         int categoryVolume(const LegacyCategory *cat) const;
         bool categoryMuted(const LegacyCategory *cat) const;
@@ -317,6 +331,8 @@ class PalmLegacyManager : public ModuleInterface
         static bool _listScenarios(LSHandle *sh, LSMessage *message, void *ctx);
         static bool _setCurrentScenario(LSHandle *sh, LSMessage *message, void *ctx);
         static bool _getCurrentScenario(LSHandle *sh, LSMessage *message, void *ctx);
+        static bool _enableScenario(LSHandle *sh, LSMessage *message, void *ctx);
+        static bool _disableScenario(LSHandle *sh, LSMessage *message, void *ctx);
         static bool _lockVolumeKeys(LSHandle *sh, LSMessage *message, void *ctx);
         static bool _vvmControl(LSHandle *sh, LSMessage *message, void *ctx);
 

@@ -146,6 +146,8 @@ LSMethod PalmLegacyManager::rootMethods[] = {
 };
 
 LSMethod PalmLegacyManager::phoneMethods[] = {
+    { "enableScenario",     PalmLegacyManager::_enableScenario },
+    { "disableScenario",    PalmLegacyManager::_disableScenario },
     { "status",                 PalmLegacyManager::_status },
     { "setMuted",               PalmLegacyManager::_phoneSetMuted },
     { "CallStatusUpdate",       PalmLegacyManager::_callStatusUpdate },
@@ -183,6 +185,8 @@ LSMethod PalmLegacyManager::dtmfMethods[] = {
 };
 
 LSMethod PalmLegacyManager::mediaMethods[] = {
+    { "enableScenario",     PalmLegacyManager::_enableScenario },
+    { "disableScenario",    PalmLegacyManager::_disableScenario },
     { "status",             PalmLegacyManager::_status },
     { "setVolume",          PalmLegacyManager::_setVolume },
     { "getVolume",          PalmLegacyManager::_getVolume },
@@ -214,6 +218,8 @@ LSMethod PalmLegacyManager::alertMethods[] = {
 };
 
 LSMethod PalmLegacyManager::vvmMethods[] = {
+    { "enableScenario",     PalmLegacyManager::_enableScenario },
+    { "disableScenario",    PalmLegacyManager::_disableScenario },
     { "status",             PalmLegacyManager::_status },
     { "control",            PalmLegacyManager::_vvmControl },
     { "setVolume",          PalmLegacyManager::_setVolume },
@@ -259,25 +265,34 @@ PalmLegacyManager::LegacyCategory *PalmLegacyManager::categoryFor(LSMessage *mes
 /* The Palm scenario names for a category, in the order the phone app expects
  * to list them. Only routes that exist on a handset are offered: this is the
  * list com.palm.app.phone builds its audio-route picker from. */
-std::vector<std::string> PalmLegacyManager::scenariosFor(const LegacyCategory *cat)
+std::vector<std::string> PalmLegacyManager::scenariosFor(const LegacyCategory *cat) const
 {
     std::vector<std::string> list;
     if (!cat || !cat->scenarioPrefix)
         return list;
 
     const std::string p(cat->scenarioPrefix);
-    list.push_back(p + "_front_speaker");
-    list.push_back(p + "_back_speaker");
-    list.push_back(p + "_headset");
-    list.push_back(p + "_headset_mic");
+    std::vector<std::string> all;
+    all.push_back(p + "_front_speaker");
+    all.push_back(p + "_back_speaker");
+    all.push_back(p + "_headset");
+    all.push_back(p + "_headset_mic");
     if (0 == strcmp(cat->scenarioPrefix, "media"))
     {
-        list.push_back(p + "_a2dp");
-        list.push_back(p + "_wireless");
+        all.push_back(p + "_a2dp");
+        all.push_back(p + "_wireless");
     }
     else
     {
-        list.push_back(p + "_bluetooth_sco");
+        all.push_back(p + "_bluetooth_sco");
+    }
+
+    /* A disabled scenario is not offered. This is how HAC removes the
+     * speakerphone, and what disableScenario meant. */
+    for (const auto &name : all)
+    {
+        if (mDisabledScenarios.find(name) == mDisabledScenarios.end())
+            list.push_back(name);
     }
     return list;
 }
@@ -322,6 +337,30 @@ bool PalmLegacyManager::routeFromScenario(const LegacyCategory *cat, const std::
     else return false;
 
     return true;
+}
+
+void PalmLegacyManager::applyHac()
+{
+    LegacyCategory *phone = categoryByName("/phone");
+    if (!phone)
+        return;
+
+    const std::string backSpeaker = scenarioName(phone, ePhoneRoute_Speaker);
+
+    if (mHac)
+    {
+        /* Take the speakerphone out of service and put the call on the
+         * earpiece, unconditionally -- the same two steps webOS 3.0.5 took. */
+        mDisabledScenarios.insert(backSpeaker);
+        phone->route = ePhoneRoute_Earpiece;
+        updateCallMode();
+    }
+    else
+    {
+        mDisabledScenarios.erase(backSpeaker);
+    }
+
+    notifyCategory(phone, "changed");
 }
 
 int PalmLegacyManager::categoryVolume(const LegacyCategory *cat) const
@@ -1445,6 +1484,7 @@ bool PalmLegacyManager::_setMuted(LSHandle *sh, LSMessage *message, void *ctx)
 
 bool PalmLegacyManager::_listScenarios(LSHandle *sh, LSMessage *message, void *ctx)
 {
+    PalmLegacyManager *self = getPalmLegacyManagerInstance();
     LegacyCategory *cat = categoryFor(message);
     LSMessageJsonParser msg(message, SCHEMA_2(OPTIONAL(enabled, boolean),
                                               OPTIONAL(disabled, boolean)));
@@ -1452,8 +1492,11 @@ bool PalmLegacyManager::_listScenarios(LSHandle *sh, LSMessage *message, void *c
         return true;
 
     pbnjson::JValue scenarios = pbnjson::Array();
-    for (const auto &name : scenariosFor(cat))
-        scenarios.append(name);
+    if (self)
+    {
+        for (const auto &name : self->scenariosFor(cat))
+            scenarios.append(name);
+    }
 
     pbnjson::JValue reply = pbnjson::Object();
     reply.put("returnValue", true);
@@ -1482,6 +1525,15 @@ bool PalmLegacyManager::_setCurrentScenario(LSHandle *sh, LSMessage *message, vo
     {
         const char *reply = STANDARD_JSON_ERROR(AUDIOD_ERRORCODE_INVALID_PARAMS,
                                                 "Unknown scenario for this category");
+        if (!LSMessageReply(sh, message, reply, &lserror))
+            lserror.Print(__FUNCTION__, __LINE__);
+        return true;
+    }
+
+    if (self->mDisabledScenarios.find(scenario) != self->mDisabledScenarios.end())
+    {
+        const char *reply = STANDARD_JSON_ERROR(AUDIOD_ERRORCODE_INVALID_PARAMS,
+                                                "That scenario is disabled");
         if (!LSMessageReply(sh, message, reply, &lserror))
             lserror.Print(__FUNCTION__, __LINE__);
         return true;
@@ -1740,9 +1792,12 @@ bool PalmLegacyManager::_hacSet(LSHandle *sh, LSMessage *message, void *ctx)
     if (!msg.get("enable", hac))
         msg.get("hac", hac);
 
-    if (self)
+    if (self && self->mHac != hac)
     {
         self->mHac = hac;
+        /* Not just a flag any more: this takes the speakerphone out of service
+         * and puts the call on the earpiece. */
+        self->applyHac();
         self->notifyStatusSubscribers();
     }
 
@@ -1753,10 +1808,86 @@ bool PalmLegacyManager::_hacSet(LSHandle *sh, LSMessage *message, void *ctx)
 bool PalmLegacyManager::_hacGet(LSHandle *sh, LSMessage *message, void *ctx)
 {
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
+    CLSError lserror;
+    bool subscribed = false;
+
+    /* webOS 3.0.5's _hacGet is subscribable and answers with "enabled", not
+     * "hac" -- "hac" is the spelling the /phone/status payload uses. */
+    if (LSMessageIsSubscription(message) &&
+        !LSSubscriptionProcess(sh, message, &subscribed, &lserror))
+        lserror.Print(__FUNCTION__, __LINE__);
+
     pbnjson::JValue reply = pbnjson::Object();
     reply.put("returnValue", true);
-    reply.put("hac", self ? self->mHac : false);
+    reply.put("enabled", self ? self->mHac : false);
+    reply.put("subscribed", subscribed);
     replyJson(sh, message, reply);
+    return true;
+}
+
+bool PalmLegacyManager::_enableScenario(LSHandle *sh, LSMessage *message, void *ctx)
+{
+    PalmLegacyManager *self = getPalmLegacyManagerInstance();
+    LegacyCategory *cat = categoryFor(message);
+    LSMessageJsonParser msg(message, SCHEMA_1(REQUIRED(scenario, string)));
+    if (!msg.parse(__FUNCTION__, sh))
+        return true;
+
+    std::string scenario;
+    msg.get("scenario", scenario);
+
+    EPhoneRoute route = ePhoneRoute_Earpiece;
+    CLSError lserror;
+    if (!self || !cat || !routeFromScenario(cat, scenario, &route))
+    {
+        const char *reply = STANDARD_JSON_ERROR(AUDIOD_ERRORCODE_INVALID_PARAMS,
+                                                "Unknown scenario for this category");
+        if (!LSMessageReply(sh, message, reply, &lserror))
+            lserror.Print(__FUNCTION__, __LINE__);
+        return true;
+    }
+
+    self->mDisabledScenarios.erase(scenario);
+    self->notifyCategory(cat, "enabled");
+    replySuccess(sh, message);
+    return true;
+}
+
+bool PalmLegacyManager::_disableScenario(LSHandle *sh, LSMessage *message, void *ctx)
+{
+    PalmLegacyManager *self = getPalmLegacyManagerInstance();
+    LegacyCategory *cat = categoryFor(message);
+    LSMessageJsonParser msg(message, SCHEMA_1(REQUIRED(scenario, string)));
+    if (!msg.parse(__FUNCTION__, sh))
+        return true;
+
+    std::string scenario;
+    msg.get("scenario", scenario);
+
+    EPhoneRoute route = ePhoneRoute_Earpiece;
+    CLSError lserror;
+    if (!self || !cat || !routeFromScenario(cat, scenario, &route))
+    {
+        const char *reply = STANDARD_JSON_ERROR(AUDIOD_ERRORCODE_INVALID_PARAMS,
+                                                "Unknown scenario for this category");
+        if (!LSMessageReply(sh, message, reply, &lserror))
+            lserror.Print(__FUNCTION__, __LINE__);
+        return true;
+    }
+
+    self->mDisabledScenarios.insert(scenario);
+
+    /* Disabling the scenario currently in use has to move the audio somewhere,
+     * or the category is left pointing at a route it may no longer have. */
+    if (cat->route == route)
+    {
+        cat->route = ePhoneRoute_Earpiece;
+        if (0 == strcmp(cat->category, "/phone"))
+            self->updateCallMode();
+    }
+
+    self->notifyCategory(cat, "disabled");
+    replySuccess(sh, message);
     return true;
 }
 
