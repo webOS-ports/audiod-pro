@@ -220,8 +220,8 @@ class PalmLegacyManager : public ModuleInterface
         void updateCallMode();
         bool applyCallRouting(ECallMode mode, EPhoneRoute route);
 
-        /* The combined view of the per-line states CallStatusUpdate reports. */
-        ECallStatus effectiveCallStatus() const;
+        /* Reduce the per-line states CallStatusUpdate reports to one call mode
+         * and push it to the hardware. */
         void applyCallStatus();
 
         /* Category helpers. The Palm API is category-addressed and LS2 gives us

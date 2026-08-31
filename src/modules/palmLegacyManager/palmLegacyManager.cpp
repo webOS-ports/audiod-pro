@@ -671,7 +671,8 @@ bool PalmLegacyManager::connectToPulse()
         return false;
     }
 
-    snprintf(name, sizeof(name), "PalmLegacyManager:%i", getpid());
+    /* Cannot truncate: 64 bytes for a fixed prefix plus a pid. */
+    (void) snprintf(name, sizeof(name), "PalmLegacyManager:%i", getpid());
     mPaContext = pa_context_new(pa_glib_mainloop_get_api(mPaMainloop), name);
     if (!mPaContext)
     {
@@ -818,12 +819,13 @@ void PalmLegacyManager::paCardInfoCb(pa_context *c, const pa_card_info *info, in
             highest = p;
 
         /* Dual-SIM devices expose one voicecall profile per modem mode; prefer
-         * the explicit mode-1 variant when present, as the Palm-era audiod did. */
-        if (!strcasecmp(p->name, "voicecall-voicemmode1"))
-            voiceCall = p;
-        else if (!voiceCall && (!strcasecmp(p->name, "voicecall") ||
-                                !strcasecmp(p->name, "voice call") ||
-                                !strcasecmp(p->name, "Voice Call")))
+         * the explicit mode-1 variant when present, as the Palm-era audiod did,
+         * and otherwise take the first plainly-named one. */
+        const bool isModeOne = (0 == strcasecmp(p->name, "voicecall-voicemmode1"));
+        const bool isPlain = (0 == strcasecmp(p->name, "voicecall") ||
+                              0 == strcasecmp(p->name, "voice call") ||
+                              0 == strcasecmp(p->name, "Voice Call"));
+        if (isModeOne || (!voiceCall && isPlain))
             voiceCall = p;
     }
 
@@ -1052,23 +1054,6 @@ void PalmLegacyManager::updateCallMode()
     }
 
     notifyStatusSubscribers();
-}
-
-/* A carrier call outranks a VoIP one: if the modem is up, that is what the
- * hardware has to be routed for. */
-PalmLegacyManager::ECallStatus PalmLegacyManager::effectiveCallStatus() const
-{
-    auto live = [](ECallStatus s) {
-        return s == eCallStatus_Active || s == eCallStatus_OnHold ||
-               s == eCallStatus_Incoming || s == eCallStatus_Dialing ||
-               s == eCallStatus_Connecting;
-    };
-
-    if (live(mCarrierStatus))
-        return mCarrierStatus;
-    if (live(mVoipStatus))
-        return mVoipStatus;
-    return eCallStatus_Disconnected;
 }
 
 void PalmLegacyManager::applyCallStatus()
