@@ -17,7 +17,8 @@
                 "com.webos.service.bluetooth2",
                 "com.webos.service.pdm",
                 "com.webos.service.settings",
-                "com.webos.settingsservice"
+                "com.webos.settingsservice",
+                "com.webos.surfacemanager-cardshell"
             ]
         },
         {
