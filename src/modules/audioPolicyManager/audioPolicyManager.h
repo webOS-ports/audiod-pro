@@ -162,6 +162,26 @@ class AudioPolicyManager : public ModuleInterface
         bool removeTrackId(const std::string& trackId);
         bool addTrackId(const std::string& trackId, const std::string &streamType);
 
+        /* Legacy (com.palm.audio) support.
+         *
+         * The Palm-era API addresses volume and mute per category -- /media,
+         * /ringtone, /system and friends -- and palmLegacyManager has to drive
+         * those without going back out over LS2 to our own setInputVolume.
+         * These take the same path _setInputVolume and _muteSink do, so the
+         * policy engine stays the single source of truth for a stream's volume
+         * and mute state and both API surfaces always agree.
+         *
+         * Volume is applied to the mixer only while the stream is actually
+         * active; otherwise the policy record is updated and picked up by
+         * applyVolumePolicy() when the stream next opens -- the same rule
+         * _setInputVolume follows. */
+        bool isKnownStream(const std::string& streamType);
+        EVirtualAudioSink sinkForStream(const std::string& streamType);
+        bool setStreamVolume(const std::string& streamType, const int& volume);
+        int getStreamVolume(const std::string& streamType);
+        bool setStreamMute(const std::string& streamType, const bool& mute);
+        bool getStreamMute(const std::string& streamType);
+
         //Luna API callbacks for pulseaudio calls
         static bool _setInputVolumeCallBackPA(LSHandle *sh, LSMessage *reply, void *ctx, bool status);
         static bool _setSourceInputVolumeCallBackPA(LSHandle *lshandle, LSMessage *message, void *ctx, bool status);

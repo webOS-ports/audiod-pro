@@ -1403,6 +1403,107 @@ bool AudioPolicyManager::_muteSink(LSHandle *lshandle, LSMessage *message, void 
     return true;
 }
 
+/* ------------------------------------------------------------------------- *
+ * Legacy (com.palm.audio) per-stream volume and mute
+ *
+ * palmLegacyManager serves the Palm-era API, where volume is addressed by
+ * category rather than by stream type. These entry points give it the same
+ * effect _setInputVolume and _muteSink have, minus the LS2 round trip, so a
+ * legacy caller and a modern one cannot disagree about a stream's volume.
+ * ------------------------------------------------------------------------- */
+
+bool AudioPolicyManager::isKnownStream(const std::string& streamType)
+{
+    return (getSinkType(streamType) != eVirtualSink_None);
+}
+
+EVirtualAudioSink AudioPolicyManager::sinkForStream(const std::string& streamType)
+{
+    return getSinkType(streamType);
+}
+
+bool AudioPolicyManager::setStreamVolume(const std::string& streamType, const int& volume)
+{
+    EVirtualAudioSink sink = getSinkType(streamType);
+    if (eVirtualSink_None == sink)
+    {
+        PM_LOG_ERROR(MSGID_POLICY_MANAGER, INIT_KVCOUNT,
+            "setStreamVolume: unknown stream type %s", streamType.c_str());
+        return false;
+    }
+
+    if (volume < INIT_VOLUME || volume > MAX_VOLUME)
+    {
+        PM_LOG_ERROR(MSGID_POLICY_MANAGER, INIT_KVCOUNT,
+            "setStreamVolume: volume %d out of range for %s", volume, streamType.c_str());
+        return false;
+    }
+
+    PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT,
+        "setStreamVolume: %s -> %d", streamType.c_str(), volume);
+
+    /* Only a live stream has anything in the mixer to program. The nullptr
+     * callbacks are the form the internal policy paths already use -- there is
+     * no LS2 message to reply to here, so the bookkeeping that
+     * _setInputVolumeCallBackPA would have done is done inline below. */
+    if (getStreamActiveStatus(streamType))
+    {
+        if (!setVolume(sink, volume, getMixerType(streamType), nullptr, nullptr, nullptr, nullptr))
+            PM_LOG_ERROR(MSGID_POLICY_MANAGER, INIT_KVCOUNT,
+                "setStreamVolume: mixer call failed for %s; policy record still updated",
+                streamType.c_str());
+    }
+
+    updateCurrentVolume(streamType, volume);
+    notifyInputVolume(sink, volume, false);
+    notifyGetVolumeSubscribers(streamType, volume);
+    return true;
+}
+
+int AudioPolicyManager::getStreamVolume(const std::string& streamType)
+{
+    if (eVirtualSink_None == getSinkType(streamType))
+    {
+        PM_LOG_ERROR(MSGID_POLICY_MANAGER, INIT_KVCOUNT,
+            "getStreamVolume: unknown stream type %s", streamType.c_str());
+        return -1;
+    }
+    return getCurrentVolume(streamType);
+}
+
+bool AudioPolicyManager::setStreamMute(const std::string& streamType, const bool& mute)
+{
+    EVirtualAudioSink sink = getSinkType(streamType);
+    if (eVirtualSink_None == sink)
+    {
+        PM_LOG_ERROR(MSGID_POLICY_MANAGER, INIT_KVCOUNT,
+            "setStreamMute: unknown stream type %s", streamType.c_str());
+        return false;
+    }
+
+    PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT,
+        "setStreamMute: %s -> %d", streamType.c_str(), (int) mute);
+
+    if (getStreamActiveStatus(streamType))
+    {
+        if (!muteSink(sink, mute ? 1 : 0, getMixerType(streamType), nullptr, nullptr, nullptr, nullptr))
+            PM_LOG_ERROR(MSGID_POLICY_MANAGER, INIT_KVCOUNT,
+                "setStreamMute: mixer call failed for %s; policy record still updated",
+                streamType.c_str());
+    }
+
+    updateMuteStatus(streamType, mute);
+    notifyGetStreamStatusSubscribers(getStreamStatus(streamType, true));
+    return true;
+}
+
+bool AudioPolicyManager::getStreamMute(const std::string& streamType)
+{
+    if (eVirtualSink_None == getSinkType(streamType))
+        return false;
+    return (0 != getCurrentSinkMuteStatus(streamType));
+}
+
 bool AudioPolicyManager::_setInputVolume(LSHandle *lshandle, LSMessage *message, void *ctx)
 {
     PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT, "AudioPolicyManager: _setInputVolume");

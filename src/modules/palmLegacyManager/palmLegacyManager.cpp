@@ -20,21 +20,42 @@
 #include <strings.h>
 
 #include "palmLegacyManager.h"
+#include "audioPolicyManager.h"
 #include "main.h"
 
 #define PALM_AUDIO_SERVICE      "com.palm.audio"
 #define PORTS_AUDIO_SERVICE     "org.webosports.service.audio"
 
+#define MASTER_GET_VOLUME       "luna://com.webos.service.audio/master/getVolume"
+#define MASTER_URI_PREFIX       "luna://com.webos.service.audio/master/"
+
 /* Subscription keys. LSSubscriptionReply matches on an opaque string, so these
  * only have to agree with what the corresponding handler passes to
- * LSSubscriptionProcess. Using the "<category>/<method>" shape keeps them
- * readable in ls-monitor. */
+ * LSSubscriptionProcess -- which is "<category>/<method>". */
 #define KEY_ROOT_STATUS         "/getStatus"
-#define KEY_PHONE_STATUS        "/phone/status"
-#define KEY_RINGTONE_STATUS     "/ringtone/status"
 
 bool PalmLegacyManager::mIsObjRegistered = PalmLegacyManager::RegisterObject();
 PalmLegacyManager* PalmLegacyManager::mPalmLegacyManager = nullptr;
+
+/* The Palm categories this module serves, and what each maps onto here.
+ *
+ * streamType is the audiod stream that actually carries the category's audio.
+ * This generation's virtual-sink enum is the TV-oriented one, so there is no
+ * ealarm/etimer/enotifications/evvm/enavigation and hence no /alarm, /timer,
+ * /notification or /nav: a category with nothing behind it would be a lie.
+ * /vvm shares pmedia because voicemail playback goes out the media path here.
+ *
+ * scenarioPrefix is the leading token of the category's Palm scenario names,
+ * or nullptr for the categories the Palm API never made routable. */
+PalmLegacyManager::LegacyCategory PalmLegacyManager::sCategories[] = {
+    { "/media",     "pmedia",     "media", ePhoneRoute_Speaker  },
+    { "/ringtone",  "pringtones", nullptr, ePhoneRoute_Speaker  },
+    { "/system",    "pfeedback",  nullptr, ePhoneRoute_Speaker  },
+    { "/alert",     "palerts",    nullptr, ePhoneRoute_Speaker  },
+    { "/phone",     "voipcall",   "phone", ePhoneRoute_Earpiece },
+    { "/vvm",       "pmedia",     "vvm",   ePhoneRoute_Earpiece },
+    { nullptr,      nullptr,      nullptr, ePhoneRoute_Earpiece },
+};
 
 PalmLegacyManager* PalmLegacyManager::getPalmLegacyManagerInstance()
 {
@@ -46,21 +67,23 @@ PalmLegacyManager::PalmLegacyManager(ModuleConfig* const pConfObj) :
     mObjModuleManager(ModuleManager::getModuleManagerInstance()),
     mPalmHandle(nullptr),
     mPortsHandle(nullptr),
-    mPaMainloop(nullptr),
-    mPaContext(nullptr),
-    mPaReady(false),
     mCallMode(eCallMode_None),
     mAppliedCallMode(eCallMode_None),
-    mCallStatus(eCallStatus_None),
-    mPhoneRoute(ePhoneRoute_Earpiece),
-    mSpeakerMode(false),
+    mAppliedRoute(ePhoneRoute_Earpiece),
+    mCarrierStatus(eCallStatus_NoCall),
+    mVoipStatus(eCallStatus_NoCall),
+    mCallWithVideo(false),
     mPhoneMuted(false),
-    mRingtoneMuted(false),
     mMicMuted(false),
     mHac(false),
     mVolumeLocked(false),
-    mVolume(50),
-    mMuted(false)
+    mRingerOn(true),
+    mActiveSoundOutput(""),
+    mMasterVolume(0),
+    mMasterMuted(false),
+    mPaMainloop(nullptr),
+    mPaContext(nullptr),
+    mPaReady(false)
 {
     if (!mObjAudioMixer)
         PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT, "AudioMixer instance is null");
@@ -73,12 +96,45 @@ PalmLegacyManager::~PalmLegacyManager()
 }
 
 /* ------------------------------------------------------------------------- *
+ * Small reply helpers
+ * ------------------------------------------------------------------------- */
+
+void PalmLegacyManager::replyJson(LSHandle *sh, LSMessage *message, pbnjson::JValue reply)
+{
+    CLSError lserror;
+    std::string payload = reply.stringify();
+    if (!LSMessageReply(sh, message, payload.c_str(), &lserror))
+        lserror.Print(__FUNCTION__, __LINE__);
+}
+
+void PalmLegacyManager::replySuccess(LSHandle *sh, LSMessage *message)
+{
+    CLSError lserror;
+    if (!LSMessageReply(sh, message, STANDARD_JSON_SUCCESS, &lserror))
+        lserror.Print(__FUNCTION__, __LINE__);
+}
+
+/* Outbound calls to the Palm-era services (com.palm.telephony and friends) go
+ * out under a legacy bus name: those are the identities whose LS2 role grants
+ * outbound access to them. */
+LSHandle *PalmLegacyManager::legacyHandle() const
+{
+    if (mPalmHandle)
+        return mPalmHandle;
+    if (mPortsHandle)
+        return mPortsHandle;
+    return GetPalmService();
+}
+
+/* ------------------------------------------------------------------------- *
  * Method tables
  * ------------------------------------------------------------------------- */
 
 LSMethod PalmLegacyManager::rootMethods[] = {
     { "getStatus",      PalmLegacyManager::_getStatus },
-    { "setVolume",      PalmLegacyManager::_setVolume },
+    { "status",         PalmLegacyManager::_getStatus },
+    { "setVolume",      PalmLegacyManager::_rootSetVolume },
+    { "getVolume",      PalmLegacyManager::_rootGetVolume },
     { "setMute",        PalmLegacyManager::_setMute },
     { "setMuted",       PalmLegacyManager::_setMute },
     { "setMicMute",     PalmLegacyManager::_setMicMute },
@@ -90,23 +146,30 @@ LSMethod PalmLegacyManager::rootMethods[] = {
 };
 
 LSMethod PalmLegacyManager::phoneMethods[] = {
-    { "status",                 PalmLegacyManager::_phoneStatus },
+    { "enableScenario",     PalmLegacyManager::_enableScenario },
+    { "disableScenario",    PalmLegacyManager::_disableScenario },
+    { "status",                 PalmLegacyManager::_status },
     { "setMuted",               PalmLegacyManager::_phoneSetMuted },
     { "CallStatusUpdate",       PalmLegacyManager::_callStatusUpdate },
     { "hacSet",                 PalmLegacyManager::_hacSet },
     { "hacGet",                 PalmLegacyManager::_hacGet },
     { "setCurrentScenario",     PalmLegacyManager::_setCurrentScenario },
     { "getCurrentScenario",     PalmLegacyManager::_getCurrentScenario },
-    { "setVolume",              PalmLegacyManager::_genericSetVolume },
-    { "getVolume",              PalmLegacyManager::_genericGetVolume },
+    { "listScenarios",          PalmLegacyManager::_listScenarios },
+    { "setVolume",              PalmLegacyManager::_setVolume },
+    { "getVolume",              PalmLegacyManager::_getVolume },
+    { "offsetVolume",           PalmLegacyManager::_offsetVolume },
+    { "lockVolumeKeys",         PalmLegacyManager::_lockVolumeKeys },
     { },
 };
 
 LSMethod PalmLegacyManager::ringtoneMethods[] = {
-    { "status",     PalmLegacyManager::_ringtoneStatus },
-    { "setMuted",   PalmLegacyManager::_ringtoneSetMuted },
-    { "setVolume",  PalmLegacyManager::_genericSetVolume },
-    { "getVolume",  PalmLegacyManager::_genericGetVolume },
+    { "status",         PalmLegacyManager::_status },
+    { "setMuted",       PalmLegacyManager::_setMuted },
+    { "setVolume",      PalmLegacyManager::_setVolume },
+    { "getVolume",      PalmLegacyManager::_getVolume },
+    { "offsetVolume",   PalmLegacyManager::_offsetVolume },
+    { "lockVolumeKeys", PalmLegacyManager::_lockVolumeKeys },
     { },
 };
 
@@ -122,23 +185,54 @@ LSMethod PalmLegacyManager::dtmfMethods[] = {
 };
 
 LSMethod PalmLegacyManager::mediaMethods[] = {
-    { "status",         PalmLegacyManager::_genericStatus },
-    { "setVolume",      PalmLegacyManager::_genericSetVolume },
-    { "getVolume",      PalmLegacyManager::_genericGetVolume },
-    { "lockVolumeKeys", PalmLegacyManager::_lockVolumeKeys },
+    { "enableScenario",     PalmLegacyManager::_enableScenario },
+    { "disableScenario",    PalmLegacyManager::_disableScenario },
+    { "status",             PalmLegacyManager::_status },
+    { "setVolume",          PalmLegacyManager::_setVolume },
+    { "getVolume",          PalmLegacyManager::_getVolume },
+    { "offsetVolume",       PalmLegacyManager::_offsetVolume },
+    { "setMuted",           PalmLegacyManager::_setMuted },
+    { "setCurrentScenario", PalmLegacyManager::_setCurrentScenario },
+    { "getCurrentScenario", PalmLegacyManager::_getCurrentScenario },
+    { "listScenarios",      PalmLegacyManager::_listScenarios },
+    { "lockVolumeKeys",     PalmLegacyManager::_lockVolumeKeys },
     { },
 };
 
 LSMethod PalmLegacyManager::systemMethods[] = {
-    { "status",     PalmLegacyManager::_genericStatus },
-    { "setVolume",  PalmLegacyManager::_genericSetVolume },
-    { "getVolume",  PalmLegacyManager::_genericGetVolume },
+    { "status",         PalmLegacyManager::_status },
+    { "setVolume",      PalmLegacyManager::_setVolume },
+    { "getVolume",      PalmLegacyManager::_getVolume },
+    { "offsetVolume",   PalmLegacyManager::_offsetVolume },
+    { "setMuted",       PalmLegacyManager::_setMuted },
+    { },
+};
+
+LSMethod PalmLegacyManager::alertMethods[] = {
+    { "status",         PalmLegacyManager::_status },
+    { "setVolume",      PalmLegacyManager::_setVolume },
+    { "getVolume",      PalmLegacyManager::_getVolume },
+    { "offsetVolume",   PalmLegacyManager::_offsetVolume },
+    { "setMuted",       PalmLegacyManager::_setMuted },
     { },
 };
 
 LSMethod PalmLegacyManager::vvmMethods[] = {
-    { "status",     PalmLegacyManager::_genericStatus },
-    { "control",    PalmLegacyManager::_vvmControl },
+    { "enableScenario",     PalmLegacyManager::_enableScenario },
+    { "disableScenario",    PalmLegacyManager::_disableScenario },
+    { "status",             PalmLegacyManager::_status },
+    { "control",            PalmLegacyManager::_vvmControl },
+    { "setVolume",          PalmLegacyManager::_setVolume },
+    { "getVolume",          PalmLegacyManager::_getVolume },
+    { "offsetVolume",       PalmLegacyManager::_offsetVolume },
+    { "setCurrentScenario", PalmLegacyManager::_setCurrentScenario },
+    { "getCurrentScenario", PalmLegacyManager::_getCurrentScenario },
+    { "listScenarios",      PalmLegacyManager::_listScenarios },
+    { },
+};
+
+LSMethod PalmLegacyManager::stateMethods[] = {
+    { "setRingerSwitch",    PalmLegacyManager::_setRingerSwitch },
     { },
 };
 
@@ -146,6 +240,146 @@ LSMethod PalmLegacyManager::systemsoundsMethods[] = {
     { "playFeedback",   PalmLegacyManager::_playFeedback },
     { },
 };
+
+/* ------------------------------------------------------------------------- *
+ * Category helpers
+ * ------------------------------------------------------------------------- */
+
+PalmLegacyManager::LegacyCategory *PalmLegacyManager::categoryByName(const char *name)
+{
+    if (!name)
+        return nullptr;
+    for (LegacyCategory *c = sCategories; c->category; ++c)
+    {
+        if (0 == strcmp(c->category, name))
+            return c;
+    }
+    return nullptr;
+}
+
+PalmLegacyManager::LegacyCategory *PalmLegacyManager::categoryFor(LSMessage *message)
+{
+    return categoryByName(message ? LSMessageGetCategory(message) : nullptr);
+}
+
+/* The Palm scenario names for a category, in the order the phone app expects
+ * to list them. Only routes that exist on a handset are offered: this is the
+ * list com.palm.app.phone builds its audio-route picker from. */
+std::vector<std::string> PalmLegacyManager::scenariosFor(const LegacyCategory *cat) const
+{
+    std::vector<std::string> list;
+    if (!cat || !cat->scenarioPrefix)
+        return list;
+
+    const std::string p(cat->scenarioPrefix);
+    std::vector<std::string> all;
+    all.push_back(p + "_front_speaker");
+    all.push_back(p + "_back_speaker");
+    all.push_back(p + "_headset");
+    all.push_back(p + "_headset_mic");
+    if (0 == strcmp(cat->scenarioPrefix, "media"))
+    {
+        all.push_back(p + "_a2dp");
+        all.push_back(p + "_wireless");
+    }
+    else
+    {
+        all.push_back(p + "_bluetooth_sco");
+    }
+
+    /* A disabled scenario is not offered. This is how HAC removes the
+     * speakerphone, and what disableScenario meant. */
+    for (const auto &name : all)
+    {
+        if (mDisabledScenarios.find(name) == mDisabledScenarios.end())
+            list.push_back(name);
+    }
+    return list;
+}
+
+std::string PalmLegacyManager::scenarioName(const LegacyCategory *cat, EPhoneRoute route)
+{
+    if (!cat || !cat->scenarioPrefix)
+        return std::string();
+
+    const std::string p(cat->scenarioPrefix);
+    switch (route)
+    {
+        case ePhoneRoute_Speaker:       return p + "_back_speaker";
+        case ePhoneRoute_Headset:       return p + "_headset";
+        case ePhoneRoute_HeadsetMic:    return p + "_headset_mic";
+        case ePhoneRoute_BluetoothSCO:  return p + "_bluetooth_sco";
+        case ePhoneRoute_A2DP:          return p + "_a2dp";
+        case ePhoneRoute_Wireless:      return p + "_wireless";
+        case ePhoneRoute_Earpiece:
+        default:                        return p + "_front_speaker";
+    }
+}
+
+bool PalmLegacyManager::routeFromScenario(const LegacyCategory *cat, const std::string &scenario,
+                                          EPhoneRoute *route)
+{
+    if (!cat || !cat->scenarioPrefix || !route)
+        return false;
+
+    const std::string p = std::string(cat->scenarioPrefix) + "_";
+    if (scenario.compare(0, p.size(), p) != 0)
+        return false;
+
+    const std::string suffix = scenario.substr(p.size());
+    if (suffix == "front_speaker")      *route = ePhoneRoute_Earpiece;
+    else if (suffix == "back_speaker")  *route = ePhoneRoute_Speaker;
+    else if (suffix == "headset")       *route = ePhoneRoute_Headset;
+    else if (suffix == "headset_mic")   *route = ePhoneRoute_HeadsetMic;
+    else if (suffix == "bluetooth_sco") *route = ePhoneRoute_BluetoothSCO;
+    else if (suffix == "a2dp")          *route = ePhoneRoute_A2DP;
+    else if (suffix == "wireless")      *route = ePhoneRoute_Wireless;
+    else return false;
+
+    return true;
+}
+
+void PalmLegacyManager::applyHac()
+{
+    LegacyCategory *phone = categoryByName("/phone");
+    if (!phone)
+        return;
+
+    const std::string backSpeaker = scenarioName(phone, ePhoneRoute_Speaker);
+
+    if (mHac)
+    {
+        /* Take the speakerphone out of service and put the call on the
+         * earpiece, unconditionally -- the same two steps webOS 3.0.5 took. */
+        mDisabledScenarios.insert(backSpeaker);
+        phone->route = ePhoneRoute_Earpiece;
+        updateCallMode();
+    }
+    else
+    {
+        mDisabledScenarios.erase(backSpeaker);
+    }
+
+    notifyCategory(phone, "changed");
+}
+
+int PalmLegacyManager::categoryVolume(const LegacyCategory *cat) const
+{
+    AudioPolicyManager *policy = AudioPolicyManager::getAudioPolicyManagerInstance();
+    if (!cat || !cat->streamType || !policy)
+        return 0;
+
+    const int volume = policy->getStreamVolume(cat->streamType);
+    return (volume < 0) ? 0 : volume;
+}
+
+bool PalmLegacyManager::categoryMuted(const LegacyCategory *cat) const
+{
+    AudioPolicyManager *policy = AudioPolicyManager::getAudioPolicyManagerInstance();
+    if (!cat || !cat->streamType || !policy)
+        return false;
+    return policy->getStreamMute(cat->streamType);
+}
 
 /* ------------------------------------------------------------------------- *
  * Service registration
@@ -194,7 +428,9 @@ bool PalmLegacyManager::registerLegacyCategories(LSHandle *handle)
         { "/dtmf",          dtmfMethods },
         { "/media",         mediaMethods },
         { "/system",        systemMethods },
+        { "/alert",         alertMethods },
         { "/vvm",           vvmMethods },
+        { "/state",         stateMethods },
         { "/systemsounds",  systemsoundsMethods },
     };
 
@@ -240,6 +476,15 @@ void PalmLegacyManager::initialize()
         PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
             "Could not open a PulseAudio connection; call routing is unavailable");
 
+    /* Mirror the master volume so the root category can serve it without
+     * caching a number of its own. */
+    subscribeMasterVolume();
+
+    /* The active output device is what master/setVolume has to be addressed
+     * at, and audioRouter is the thing that knows it. */
+    if (mObjModuleManager)
+        mObjModuleManager->subscribeModuleEvent(this, utils::eEventActiveDeviceInfo);
+
     if (!mPalmHandle && !mPortsHandle)
         PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
             "Neither legacy audio service name could be registered; the Palm-era "
@@ -284,6 +529,130 @@ void PalmLegacyManager::deInitialize()
 
 void PalmLegacyManager::handleEvent(events::EVENTS_T* ev)
 {
+    if (!ev)
+        return;
+
+    switch (ev->eventName)
+    {
+        case utils::eEventActiveDeviceInfo:
+        {
+            events::EVENT_ACTIVE_DEVICE_INFO_T *info =
+                (events::EVENT_ACTIVE_DEVICE_INFO_T*) ev;
+            if (info->isOutput && info->isActive)
+            {
+                PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+                    "Active sound output is now %s", info->deviceName.c_str());
+                mActiveSoundOutput = info->deviceName;
+            }
+        }
+        break;
+        default:
+            break;
+    }
+}
+
+/* ------------------------------------------------------------------------- *
+ * Master volume -- the root category is an alias of
+ * com.webos.service.audio/master
+ *
+ * Proxying rather than reimplementing is deliberate: master volume already
+ * knows the per-device volume map and persists it through settingsservice, so
+ * going through it is what makes the legacy numbers survive a reboot and stay
+ * identical to what the modern API reports.
+ * ------------------------------------------------------------------------- */
+
+bool PalmLegacyManager::_masterVolumeStatusCb(LSHandle *sh, LSMessage *reply, void *ctx)
+{
+    PalmLegacyManager *self = getPalmLegacyManagerInstance();
+    if (!self || !reply)
+        return true;
+
+    const char *payload = LSMessageGetPayload(reply);
+    if (!payload)
+        return true;
+
+    pbnjson::JValue obj = pbnjson::JDomParser::fromString(payload);
+    if (!obj.isObject())
+        return true;
+
+    bool changed = false;
+    int volume = 0;
+    bool muted = false;
+    std::string soundOutput;
+
+    if (obj["volume"].asNumber(volume) == CONV_OK && volume != self->mMasterVolume)
+    {
+        self->mMasterVolume = volume;
+        changed = true;
+    }
+    if (obj["muted"].asBool(muted) == CONV_OK && muted != self->mMasterMuted)
+    {
+        self->mMasterMuted = muted;
+        changed = true;
+    }
+    if (obj["soundOutput"].asString(soundOutput) == CONV_OK && !soundOutput.empty())
+        self->mActiveSoundOutput = soundOutput;
+
+    /* Anything that moves the master volume -- the device menu's Media slider,
+     * the hardware keys, another app -- lands here, so legacy subscribers see
+     * it too. This is the half that was missing before: handleEvent() was
+     * empty and the legacy view could not observe the modern one. */
+    if (changed)
+        self->notifyStatusSubscribers();
+
+    return true;
+}
+
+void PalmLegacyManager::subscribeMasterVolume()
+{
+    CLSError lserror;
+    LSHandle *sh = GetPalmService();
+    if (!sh)
+    {
+        PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+            "subscribeMasterVolume: audiod's own service handle is null");
+        return;
+    }
+
+    if (!LSCall(sh, MASTER_GET_VOLUME, "{\"subscribe\":true}",
+                &PalmLegacyManager::_masterVolumeStatusCb, this, nullptr, &lserror))
+    {
+        lserror.Print(__FUNCTION__, __LINE__);
+        PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+            "Could not subscribe to master/getVolume; the root category will "
+            "report a stale volume");
+    }
+}
+
+bool PalmLegacyManager::masterVolumeCall(const char *method, pbnjson::JValue payload)
+{
+    CLSError lserror;
+    LSHandle *sh = GetPalmService();
+    if (!sh || !method)
+        return false;
+
+    if (mActiveSoundOutput.empty())
+    {
+        PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+            "masterVolumeCall(%s): no active sound output known yet", method);
+        return false;
+    }
+
+    /* the master methods require soundOutput; the Palm API never carried one, which is
+     * exactly why callers had to double-write both APIs to keep them in step. */
+    payload.put("soundOutput", mActiveSoundOutput);
+
+    const std::string uri = std::string(MASTER_URI_PREFIX) + method;
+    const std::string body = payload.stringify();
+
+    if (!LSCall(sh, uri.c_str(), body.c_str(), nullptr, nullptr, nullptr, &lserror))
+    {
+        lserror.Print(__FUNCTION__, __LINE__);
+        PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+            "masterVolumeCall: %s failed", uri.c_str());
+        return false;
+    }
+    return true;
 }
 
 /* ------------------------------------------------------------------------- *
@@ -302,7 +671,8 @@ bool PalmLegacyManager::connectToPulse()
         return false;
     }
 
-    snprintf(name, sizeof(name), "PalmLegacyManager:%i", getpid());
+    /* Cannot truncate: 64 bytes for a fixed prefix plus a pid. */
+    (void) snprintf(name, sizeof(name), "PalmLegacyManager:%i", getpid());
     mPaContext = pa_context_new(pa_glib_mainloop_get_api(mPaMainloop), name);
     if (!mPaContext)
     {
@@ -315,14 +685,11 @@ bool PalmLegacyManager::connectToPulse()
 
     pa_context_set_state_callback(mPaContext, &PalmLegacyManager::paContextStateCb, this);
 
-    if (pa_context_connect(mPaContext, nullptr, (pa_context_flags_t) PA_CONTEXT_NOFAIL, nullptr) < 0)
+    if (pa_context_connect(mPaContext, nullptr, PA_CONTEXT_NOFAIL, nullptr) < 0)
     {
         PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
-            "Failed to connect to PulseAudio: %s", pa_strerror(pa_context_errno(mPaContext)));
-        pa_context_unref(mPaContext);
-        pa_glib_mainloop_free(mPaMainloop);
-        mPaContext = nullptr;
-        mPaMainloop = nullptr;
+            "Could not connect to PulseAudio: %s",
+            pa_strerror(pa_context_errno(mPaContext)));
         return false;
     }
 
@@ -350,7 +717,11 @@ void PalmLegacyManager::paContextStateCb(pa_context *c, void *userdata)
              * real output port (speaker/earpiece); it is idempotent, so it is a
              * no-op when the hardware is already correct. This also re-pushes an
              * in-progress call's routing if PulseAudio came up mid-call. */
-            self->applyCallRouting(self->mCallMode, self->mPhoneRoute);
+            {
+                LegacyCategory *phone = categoryByName("/phone");
+                self->applyCallRouting(self->mCallMode,
+                                       phone ? phone->route : ePhoneRoute_Earpiece);
+            }
             break;
         case PA_CONTEXT_FAILED:
         case PA_CONTEXT_TERMINATED:
@@ -367,6 +738,24 @@ void PalmLegacyManager::paContextStateCb(pa_context *c, void *userdata)
     }
 }
 
+/* The routing request is refcounted because a card that needs a profile change
+ * spawns a continuation (paCardProfileSetCb) while the card enumeration that
+ * spawned it is still running and will deliver its own end-of-list. Both then
+ * walk the sinks and both would reach the single delete at the end of the
+ * source walk. Counting the chains instead is what makes that safe. */
+PalmLegacyManager::RoutingRequest *PalmLegacyManager::routingRef(RoutingRequest *req)
+{
+    if (req)
+        ++req->refs;
+    return req;
+}
+
+void PalmLegacyManager::routingUnref(RoutingRequest *req)
+{
+    if (req && --req->refs <= 0)
+        delete req;
+}
+
 bool PalmLegacyManager::applyCallRouting(ECallMode mode, EPhoneRoute route)
 {
     if (!mPaReady || !mPaContext)
@@ -376,7 +765,7 @@ bool PalmLegacyManager::applyCallRouting(ECallMode mode, EPhoneRoute route)
         return false;
     }
 
-    RoutingRequest *req = new(std::nothrow) RoutingRequest{this, mode, route};
+    RoutingRequest *req = new(std::nothrow) RoutingRequest{this, mode, route, 1};
     if (!req)
         return false;
 
@@ -389,7 +778,7 @@ bool PalmLegacyManager::applyCallRouting(ECallMode mode, EPhoneRoute route)
                                                      &PalmLegacyManager::paCardInfoCb, req);
     if (!op)
     {
-        delete req;
+        routingUnref(req);
         return false;
     }
     pa_operation_unref(op);
@@ -404,13 +793,13 @@ void PalmLegacyManager::paCardInfoCb(pa_context *c, const pa_card_info *info, in
 
     if (eol)
     {
-        /* No card needed a profile change (or there were none): carry on to the
-         * sinks directly. */
+        /* End of the card enumeration: hand this chain's reference on to the
+         * sink walk. */
         pa_operation *op = pa_context_get_sink_info_list(c, &PalmLegacyManager::paSinkInfoCb, req);
         if (op)
             pa_operation_unref(op);
         else
-            delete req;
+            routingUnref(req);
         return;
     }
 
@@ -430,12 +819,13 @@ void PalmLegacyManager::paCardInfoCb(pa_context *c, const pa_card_info *info, in
             highest = p;
 
         /* Dual-SIM devices expose one voicecall profile per modem mode; prefer
-         * the explicit mode-1 variant when present, as the Palm-era audiod did. */
-        if (!strcasecmp(p->name, "voicecall-voicemmode1"))
-            voiceCall = p;
-        else if (!voiceCall && (!strcasecmp(p->name, "voicecall") ||
-                                !strcasecmp(p->name, "voice call") ||
-                                !strcasecmp(p->name, "Voice Call")))
+         * the explicit mode-1 variant when present, as the Palm-era audiod did,
+         * and otherwise take the first plainly-named one. */
+        const bool isModeOne = (0 == strcasecmp(p->name, "voicecall-voicemmode1"));
+        const bool isPlain = (0 == strcasecmp(p->name, "voicecall") ||
+                              0 == strcasecmp(p->name, "voice call") ||
+                              0 == strcasecmp(p->name, "Voice Call"));
+        if (isModeOne || (!voiceCall && isPlain))
             voiceCall = p;
     }
 
@@ -455,9 +845,11 @@ void PalmLegacyManager::paCardInfoCb(pa_context *c, const pa_card_info *info, in
             "Setting card '%s' profile to '%s'", info->name, profileToSet);
         pa_operation *op = pa_context_set_card_profile_by_name(c, info->name, profileToSet,
                                                                &PalmLegacyManager::paCardProfileSetCb,
-                                                               req);
+                                                               routingRef(req));
         if (op)
             pa_operation_unref(op);
+        else
+            routingUnref(req);
     }
 }
 
@@ -477,7 +869,7 @@ void PalmLegacyManager::paCardProfileSetCb(pa_context *c, int success, void *use
     if (op)
         pa_operation_unref(op);
     else
-        delete req;
+        routingUnref(req);
 }
 
 void PalmLegacyManager::paSinkInfoCb(pa_context *c, const pa_sink_info *info, int eol, void *userdata)
@@ -492,7 +884,7 @@ void PalmLegacyManager::paSinkInfoCb(pa_context *c, const pa_sink_info *info, in
         if (op)
             pa_operation_unref(op);
         else
-            delete req;
+            routingUnref(req);
         return;
     }
 
@@ -531,7 +923,8 @@ void PalmLegacyManager::paSinkInfoCb(pa_context *c, const pa_sink_info *info, in
         switch (req->route)
         {
             case ePhoneRoute_Speaker:       preferred = speaker; break;
-            case ePhoneRoute_Headset:       preferred = headphones; break;
+            case ePhoneRoute_Headset:
+            case ePhoneRoute_HeadsetMic:    preferred = headphones; break;
             case ePhoneRoute_BluetoothSCO:  preferred = nullptr; break;  /* handled by the BT card */
             case ePhoneRoute_Earpiece:
             default:                        preferred = headphones ? headphones : earpiece; break;
@@ -567,8 +960,8 @@ void PalmLegacyManager::paSourceInfoCb(pa_context *c, const pa_source_info *info
 
     if (eol)
     {
-        /* End of the chain -- this is the one place the request is freed. */
-        delete req;
+        /* End of this chain. */
+        routingUnref(req);
         return;
     }
 
@@ -628,6 +1021,9 @@ void PalmLegacyManager::paSourcePortSetCb(pa_context *c, int success, void *user
 
 void PalmLegacyManager::updateCallMode()
 {
+    LegacyCategory *phone = categoryByName("/phone");
+    const EPhoneRoute route = phone ? phone->route : ePhoneRoute_Earpiece;
+
     /* The bug this guards against, found by decompiling the webOS 3.0.5 audiod
      * and present in audiod-pro's State::setCallMode() too: the disconnect path
      * reset the software call mode but never pushed it down, so the device's
@@ -635,35 +1031,56 @@ void PalmLegacyManager::updateCallMode()
      * then set the same mode, this early-return matched, and the whole route
      * switch was skipped -- audio silently failed from the second call onwards.
      *
-     * Comparing against mAppliedCallMode rather than a device-side cache keeps
-     * the early return (it is still worth avoiding redundant hardware work)
-     * while guaranteeing the disconnect transition is always applied, because
-     * eCallMode_None differs from whatever the call was using. */
-    if (mCallMode == mAppliedCallMode)
+     * The route is part of the comparison as well, or a speakerphone toggle
+     * during a call (which changes the route but not the mode) would be
+     * swallowed here and never reach the hardware. */
+    if (mCallMode == mAppliedCallMode && route == mAppliedRoute)
     {
-        PM_LOG_DEBUG("updateCallMode: mode unchanged (%d), nothing to apply", (int) mCallMode);
+        PM_LOG_DEBUG("updateCallMode: mode %d / route %d unchanged, nothing to apply",
+            (int) mCallMode, (int) route);
         return;
     }
 
-    if (applyCallRouting(mCallMode, mPhoneRoute))
+    if (applyCallRouting(mCallMode, route))
+    {
         mAppliedCallMode = mCallMode;
+        mAppliedRoute = route;
+    }
     else
+    {
         PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
             "Failed to apply call routing for mode %d; leaving applied mode at %d "
             "so the next transition retries", (int) mCallMode, (int) mAppliedCallMode);
+    }
 
     notifyStatusSubscribers();
 }
 
+void PalmLegacyManager::applyCallStatus()
+{
+    const bool carrierActive = (mCarrierStatus == eCallStatus_Active ||
+                                mCarrierStatus == eCallStatus_OnHold);
+    const bool voipActive = (mVoipStatus == eCallStatus_Active ||
+                             mVoipStatus == eCallStatus_OnHold);
+
+    if (carrierActive)
+        mCallMode = eCallMode_Carrier;
+    else if (voipActive)
+        mCallMode = eCallMode_Voip;
+    else
+        mCallMode = eCallMode_None;
+
+    /* Deliberately called on the disconnect path too -- see updateCallMode(). */
+    updateCallMode();
+}
+
 /* ------------------------------------------------------------------------- *
- * Helpers
+ * Status payloads and subscriptions
  * ------------------------------------------------------------------------- */
 
-void PalmLegacyManager::postCategoryStatus(const char *category, const char *method,
-                                           pbnjson::JValue reply)
+void PalmLegacyManager::postCategoryStatus(const std::string &key, pbnjson::JValue reply)
 {
     CLSError lserror;
-    std::string key = std::string(category) + method;
     std::string payload = reply.stringify();
 
     if (mPalmHandle && !LSSubscriptionReply(mPalmHandle, key.c_str(), payload.c_str(), &lserror))
@@ -672,24 +1089,75 @@ void PalmLegacyManager::postCategoryStatus(const char *category, const char *met
         lserror.Print(__FUNCTION__, __LINE__);
 }
 
-void PalmLegacyManager::notifyStatusSubscribers()
+pbnjson::JValue PalmLegacyManager::rootStatus() const
 {
     pbnjson::JValue reply = pbnjson::Object();
     reply.put("returnValue", true);
-    reply.put("volume", mVolume);
-    reply.put("mute", mMuted);
+    reply.put("volume", mMasterVolume);
+    reply.put("mute", mMasterMuted);
+    reply.put("muted", mMasterMuted);
     reply.put("inCall", mCallMode != eCallMode_None);
-    reply.put("speakerMode", mSpeakerMode);
+    reply.put("speakerMode", categoryByName("/phone") &&
+                             categoryByName("/phone")->route == ePhoneRoute_Speaker);
     reply.put("micMute", mMicMuted);
-    postCategoryStatus("", KEY_ROOT_STATUS, reply);
+    return reply;
+}
 
-    pbnjson::JValue phoneReply = pbnjson::Object();
-    phoneReply.put("returnValue", true);
-    phoneReply.put("muted", mPhoneMuted);
-    phoneReply.put("hac", mHac);
-    phoneReply.put("inCall", mCallMode != eCallMode_None);
-    phoneReply.put("scenario", mSpeakerMode ? "phone_back_speaker" : "phone_front_speaker");
-    postCategoryStatus("", KEY_PHONE_STATUS, phoneReply);
+/* The shape com.palm.app.phone's audioInterface.js actually reads: it gates on
+ * payload.action and payload.active, and without them its route picker and the
+ * in-call proximity handling never update. */
+pbnjson::JValue PalmLegacyManager::categoryStatus(const LegacyCategory *cat,
+                                                  const char *action) const
+{
+    pbnjson::JValue reply = pbnjson::Object();
+    reply.put("returnValue", true);
+    if (!cat)
+        return reply;
+
+    const bool routable = (cat->scenarioPrefix != nullptr);
+    const bool isPhone = (0 == strcmp(cat->category, "/phone"));
+
+    reply.put("action", action ? action : "changed");
+    reply.put("volume", categoryVolume(cat));
+    reply.put("muted", isPhone ? mPhoneMuted : categoryMuted(cat));
+
+    if (routable)
+    {
+        reply.put("scenario", scenarioName(cat, cat->route));
+        /* "active" means this scenario is the one currently carrying audio. */
+        reply.put("active", isPhone ? (mCallMode != eCallMode_None) : true);
+    }
+
+    if (isPhone)
+    {
+        reply.put("hac", mHac);
+        reply.put("inCall", mCallMode != eCallMode_None);
+    }
+
+    /* com.palm.app.clock reads the ringer switch out of /system/status. */
+    if (0 == strcmp(cat->category, "/system"))
+        reply.put("ringer switch", mRingerOn);
+
+    return reply;
+}
+
+void PalmLegacyManager::notifyCategory(const LegacyCategory *cat, const char *action)
+{
+    if (!cat)
+        return;
+    postCategoryStatus(std::string(cat->category) + "/status", categoryStatus(cat, action));
+}
+
+void PalmLegacyManager::notifyStatusSubscribers()
+{
+    postCategoryStatus(KEY_ROOT_STATUS, rootStatus());
+    postCategoryStatus("/status", rootStatus());
+
+    /* Every category, not just /phone: subscribers on /ringtone/status,
+     * /media/status, /system/status and /vvm/status used to get one reply and
+     * then silence forever. */
+    for (LegacyCategory *c = sCategories; c->category; ++c)
+        notifyCategory(c, "changed");
 }
 
 /* ------------------------------------------------------------------------- *
@@ -705,72 +1173,79 @@ bool PalmLegacyManager::_getStatus(LSHandle *sh, LSMessage *message, void *ctx)
     if (!LSSubscriptionProcess(sh, message, &subscribed, &lserror))
         lserror.Print(__FUNCTION__, __LINE__);
 
-    pbnjson::JValue reply = pbnjson::Object();
-    reply.put("returnValue", true);
-    if (self)
-    {
-        reply.put("volume", self->mVolume);
-        reply.put("mute", self->mMuted);
-        reply.put("inCall", self->mCallMode != eCallMode_None);
-        reply.put("speakerMode", self->mSpeakerMode);
-        reply.put("micMute", self->mMicMuted);
-    }
+    pbnjson::JValue reply = self ? self->rootStatus() : pbnjson::Object();
+    if (!self)
+        reply.put("returnValue", true);
     if (subscribed)
         reply.put("subscribed", true);
 
-    std::string payload = reply.stringify();
-    if (!LSMessageReply(sh, message, payload.c_str(), &lserror))
-        lserror.Print(__FUNCTION__, __LINE__);
+    replyJson(sh, message, reply);
     return true;
 }
 
-bool PalmLegacyManager::_setVolume(LSHandle *sh, LSMessage *message, void *ctx)
+bool PalmLegacyManager::_rootSetVolume(LSHandle *sh, LSMessage *message, void *ctx)
 {
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
-    LSMessageJsonParser msg(message, SCHEMA_1(REQUIRED(volume, integer)));
+    LSMessageJsonParser msg(message, SCHEMA_2(REQUIRED(volume, integer),
+                                              OPTIONAL(scenario, string)));
     if (!msg.parse(__FUNCTION__, sh))
         return true;
 
     int volume = 0;
     msg.get("volume", volume);
 
-    std::string reply = STANDARD_JSON_SUCCESS;
     if (volume < 0 || volume > 100)
     {
-        reply = STANDARD_JSON_ERROR(AUDIOD_ERRORCODE_INVALID_PARAMS,
-                                    "Volume out of range. Must be in [0;100]");
-    }
-    else if (self)
-    {
-        self->mVolume = volume;
-        self->notifyStatusSubscribers();
+        CLSError lserror;
+        const char *reply = STANDARD_JSON_ERROR(AUDIOD_ERRORCODE_INVALID_PARAMS,
+                                                "Volume out of range. Must be in [0;100]");
+        if (!LSMessageReply(sh, message, reply, &lserror))
+            lserror.Print(__FUNCTION__, __LINE__);
+        return true;
     }
 
-    CLSError lserror;
-    if (!LSMessageReply(sh, message, reply.c_str(), &lserror))
-        lserror.Print(__FUNCTION__, __LINE__);
+    if (self)
+    {
+        pbnjson::JValue payload = pbnjson::Object();
+        payload.put("volume", volume);
+        self->masterVolumeCall("setVolume", payload);
+    }
+
+    replySuccess(sh, message);
+    return true;
+}
+
+bool PalmLegacyManager::_rootGetVolume(LSHandle *sh, LSMessage *message, void *ctx)
+{
+    PalmLegacyManager *self = getPalmLegacyManagerInstance();
+    pbnjson::JValue reply = pbnjson::Object();
+    reply.put("returnValue", true);
+    reply.put("volume", self ? self->mMasterVolume : 0);
+    reply.put("muted", self ? self->mMasterMuted : false);
+    replyJson(sh, message, reply);
     return true;
 }
 
 bool PalmLegacyManager::_setMute(LSHandle *sh, LSMessage *message, void *ctx)
 {
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
-    LSMessageJsonParser msg(message, SCHEMA_1(OPTIONAL(mute, boolean)));
+    LSMessageJsonParser msg(message, SCHEMA_2(OPTIONAL(mute, boolean),
+                                              OPTIONAL(muted, boolean)));
     if (!msg.parse(__FUNCTION__, sh))
         return true;
 
     bool mute = false;
-    msg.get("mute", mute);
+    if (!msg.get("mute", mute))
+        msg.get("muted", mute);
 
     if (self)
     {
-        self->mMuted = mute;
-        self->notifyStatusSubscribers();
+        pbnjson::JValue payload = pbnjson::Object();
+        payload.put("mute", mute);
+        self->masterVolumeCall("muteVolume", payload);
     }
 
-    CLSError lserror;
-    if (!LSMessageReply(sh, message, STANDARD_JSON_SUCCESS, &lserror))
-        lserror.Print(__FUNCTION__, __LINE__);
+    replySuccess(sh, message);
     return true;
 }
 
@@ -787,12 +1262,15 @@ bool PalmLegacyManager::_setMicMute(LSHandle *sh, LSMessage *message, void *ctx)
     if (self)
     {
         self->mMicMuted = micMute;
+        /* Push it at the capture path rather than only recording it: the
+         * source walk applies mMicMuted to the handset's own source. */
+        self->applyCallRouting(self->mCallMode,
+                               categoryByName("/phone") ? categoryByName("/phone")->route
+                                                        : ePhoneRoute_Earpiece);
         self->notifyStatusSubscribers();
     }
 
-    CLSError lserror;
-    if (!LSMessageReply(sh, message, STANDARD_JSON_SUCCESS, &lserror))
-        lserror.Print(__FUNCTION__, __LINE__);
+    replySuccess(sh, message);
     return true;
 }
 
@@ -809,21 +1287,21 @@ bool PalmLegacyManager::_setCallMode(LSHandle *sh, LSMessage *message, void *ctx
 
     if (self)
     {
+        LegacyCategory *phone = categoryByName("/phone");
         bool inCall = (self->mCallMode != eCallMode_None);
-        bool speakerMode = self->mSpeakerMode;
+        bool speakerMode = phone && phone->route == ePhoneRoute_Speaker;
         msg.get("inCall", inCall);
         msg.get("speakerMode", speakerMode);
 
-        self->mSpeakerMode = speakerMode;
-        self->mPhoneRoute = speakerMode ? ePhoneRoute_Speaker : ePhoneRoute_Earpiece;
-        self->mCallMode = inCall ? eCallMode_Carrier : eCallMode_None;
-        self->mCallStatus = inCall ? eCallStatus_Active : eCallStatus_Disconnected;
-        self->updateCallMode();
+        if (phone)
+            phone->route = speakerMode ? ePhoneRoute_Speaker : ePhoneRoute_Earpiece;
+
+        self->mCarrierStatus = inCall ? eCallStatus_Active : eCallStatus_Disconnected;
+        self->mVoipStatus = eCallStatus_Disconnected;
+        self->applyCallStatus();
     }
 
-    CLSError lserror;
-    if (!LSMessageReply(sh, message, STANDARD_JSON_SUCCESS, &lserror))
-        lserror.Print(__FUNCTION__, __LINE__);
+    replySuccess(sh, message);
     return true;
 }
 
@@ -831,13 +1309,8 @@ bool PalmLegacyManager::_volumeUp(LSHandle *sh, LSMessage *message, void *ctx)
 {
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
     if (self)
-    {
-        self->mVolume = (self->mVolume >= 100) ? 100 : self->mVolume + 1;
-        self->notifyStatusSubscribers();
-    }
-    CLSError lserror;
-    if (!LSMessageReply(sh, message, STANDARD_JSON_SUCCESS, &lserror))
-        lserror.Print(__FUNCTION__, __LINE__);
+        self->masterVolumeCall("volumeUp", pbnjson::Object());
+    replySuccess(sh, message);
     return true;
 }
 
@@ -845,156 +1318,185 @@ bool PalmLegacyManager::_volumeDown(LSHandle *sh, LSMessage *message, void *ctx)
 {
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
     if (self)
-    {
-        self->mVolume = (self->mVolume <= 0) ? 0 : self->mVolume - 1;
-        self->notifyStatusSubscribers();
-    }
-    CLSError lserror;
-    if (!LSMessageReply(sh, message, STANDARD_JSON_SUCCESS, &lserror))
-        lserror.Print(__FUNCTION__, __LINE__);
+        self->masterVolumeCall("volumeDown", pbnjson::Object());
+    replySuccess(sh, message);
     return true;
 }
 
 /* ------------------------------------------------------------------------- *
- * /phone
+ * Category-addressed methods
  * ------------------------------------------------------------------------- */
 
-bool PalmLegacyManager::_phoneStatus(LSHandle *sh, LSMessage *message, void *ctx)
+bool PalmLegacyManager::_status(LSHandle *sh, LSMessage *message, void *ctx)
 {
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
+    LegacyCategory *cat = categoryFor(message);
     CLSError lserror;
     bool subscribed = false;
 
     if (!LSSubscriptionProcess(sh, message, &subscribed, &lserror))
         lserror.Print(__FUNCTION__, __LINE__);
 
-    pbnjson::JValue reply = pbnjson::Object();
-    reply.put("returnValue", true);
-    if (self)
-    {
-        reply.put("muted", self->mPhoneMuted);
-        reply.put("hac", self->mHac);
-        reply.put("inCall", self->mCallMode != eCallMode_None);
-        reply.put("scenario", self->mSpeakerMode ? "phone_back_speaker" : "phone_front_speaker");
-    }
+    pbnjson::JValue reply = self ? self->categoryStatus(cat, "changed") : pbnjson::Object();
+    if (!self)
+        reply.put("returnValue", true);
     if (subscribed)
         reply.put("subscribed", true);
 
-    std::string payload = reply.stringify();
-    if (!LSMessageReply(sh, message, payload.c_str(), &lserror))
-        lserror.Print(__FUNCTION__, __LINE__);
+    replyJson(sh, message, reply);
     return true;
 }
 
-bool PalmLegacyManager::_phoneSetMuted(LSHandle *sh, LSMessage *message, void *ctx)
+bool PalmLegacyManager::_setVolume(LSHandle *sh, LSMessage *message, void *ctx)
 {
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
-    LSMessageJsonParser msg(message, SCHEMA_1(OPTIONAL(muted, boolean)));
+    LegacyCategory *cat = categoryFor(message);
+
+    /* scenario is optional in the Palm API and callers do send it; rejecting it
+     * as an unknown property (SCHEMA_n sets additionalProperties:false) is what
+     * made per-scenario volume sets fail outright. */
+    LSMessageJsonParser msg(message, SCHEMA_2(REQUIRED(volume, integer),
+                                              OPTIONAL(scenario, string)));
+    if (!msg.parse(__FUNCTION__, sh))
+        return true;
+
+    int volume = 0;
+    msg.get("volume", volume);
+
+    CLSError lserror;
+    if (volume < 0 || volume > 100)
+    {
+        const char *reply = STANDARD_JSON_ERROR(AUDIOD_ERRORCODE_INVALID_PARAMS,
+                                                "Volume out of range. Must be in [0;100]");
+        if (!LSMessageReply(sh, message, reply, &lserror))
+            lserror.Print(__FUNCTION__, __LINE__);
+        return true;
+    }
+
+    AudioPolicyManager *policy = AudioPolicyManager::getAudioPolicyManagerInstance();
+    if (!self || !cat || !cat->streamType || !policy ||
+        !policy->setStreamVolume(cat->streamType, volume))
+    {
+        const char *reply = STANDARD_JSON_ERROR(AUDIOD_ERRORCODE_INTERNAL_ERROR,
+                                                "Could not set the volume for this category");
+        if (!LSMessageReply(sh, message, reply, &lserror))
+            lserror.Print(__FUNCTION__, __LINE__);
+        return true;
+    }
+
+    self->notifyCategory(cat, "changed");
+    replySuccess(sh, message);
+    return true;
+}
+
+bool PalmLegacyManager::_getVolume(LSHandle *sh, LSMessage *message, void *ctx)
+{
+    PalmLegacyManager *self = getPalmLegacyManagerInstance();
+    LegacyCategory *cat = categoryFor(message);
+
+    pbnjson::JValue reply = pbnjson::Object();
+    reply.put("returnValue", true);
+    reply.put("volume", self ? self->categoryVolume(cat) : 0);
+    reply.put("muted", self ? self->categoryMuted(cat) : false);
+    if (cat && cat->scenarioPrefix)
+        reply.put("scenario", scenarioName(cat, cat->route));
+
+    replyJson(sh, message, reply);
+    return true;
+}
+
+bool PalmLegacyManager::_offsetVolume(LSHandle *sh, LSMessage *message, void *ctx)
+{
+    PalmLegacyManager *self = getPalmLegacyManagerInstance();
+    LegacyCategory *cat = categoryFor(message);
+    LSMessageJsonParser msg(message, SCHEMA_3(REQUIRED(offset, integer),
+                                              OPTIONAL(scenario, string),
+                                              OPTIONAL(unit, string)));
+    if (!msg.parse(__FUNCTION__, sh))
+        return true;
+
+    int offset = 0;
+    msg.get("offset", offset);
+
+    AudioPolicyManager *policy = AudioPolicyManager::getAudioPolicyManagerInstance();
+    CLSError lserror;
+    if (!self || !cat || !cat->streamType || !policy)
+    {
+        const char *reply = STANDARD_JSON_ERROR(AUDIOD_ERRORCODE_INTERNAL_ERROR,
+                                                "Could not offset the volume for this category");
+        if (!LSMessageReply(sh, message, reply, &lserror))
+            lserror.Print(__FUNCTION__, __LINE__);
+        return true;
+    }
+
+    int volume = self->categoryVolume(cat) + offset;
+    if (volume < 0)
+        volume = 0;
+    else if (volume > 100)
+        volume = 100;
+
+    policy->setStreamVolume(cat->streamType, volume);
+    self->notifyCategory(cat, "changed");
+
+    pbnjson::JValue reply = pbnjson::Object();
+    reply.put("returnValue", true);
+    reply.put("volume", volume);
+    replyJson(sh, message, reply);
+    return true;
+}
+
+bool PalmLegacyManager::_setMuted(LSHandle *sh, LSMessage *message, void *ctx)
+{
+    PalmLegacyManager *self = getPalmLegacyManagerInstance();
+    LegacyCategory *cat = categoryFor(message);
+    LSMessageJsonParser msg(message, SCHEMA_1(REQUIRED(muted, boolean)));
     if (!msg.parse(__FUNCTION__, sh))
         return true;
 
     bool muted = false;
     msg.get("muted", muted);
 
-    if (self)
+    AudioPolicyManager *policy = AudioPolicyManager::getAudioPolicyManagerInstance();
+    if (self && cat && cat->streamType && policy)
     {
-        self->mPhoneMuted = muted;
-        /* On Palm hardware muting the call muted the capture path, not the
-         * playback one -- the far end stops hearing you, you keep hearing them. */
-        self->mMicMuted = muted;
-        self->notifyStatusSubscribers();
+        policy->setStreamMute(cat->streamType, muted);
+        self->notifyCategory(cat, "changed");
     }
 
-    CLSError lserror;
-    if (!LSMessageReply(sh, message, STANDARD_JSON_SUCCESS, &lserror))
-        lserror.Print(__FUNCTION__, __LINE__);
+    replySuccess(sh, message);
     return true;
 }
 
-bool PalmLegacyManager::_callStatusUpdate(LSHandle *sh, LSMessage *message, void *ctx)
+bool PalmLegacyManager::_listScenarios(LSHandle *sh, LSMessage *message, void *ctx)
 {
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
-    LSMessageJsonParser msg(message, SCHEMA_2(OPTIONAL(transport, string),
-                                              OPTIONAL(status, string)));
+    LegacyCategory *cat = categoryFor(message);
+    LSMessageJsonParser msg(message, SCHEMA_2(OPTIONAL(enabled, boolean),
+                                              OPTIONAL(disabled, boolean)));
     if (!msg.parse(__FUNCTION__, sh))
         return true;
 
-    std::string transport;
-    std::string status;
-    msg.get("transport", transport);
-    msg.get("status", status);
-
+    pbnjson::JValue scenarios = pbnjson::Array();
     if (self)
     {
-        if (status == "active")
-            self->mCallStatus = eCallStatus_Active;
-        else if (status == "disconnected")
-            self->mCallStatus = eCallStatus_Disconnected;
-        else if (status == "incoming")
-            self->mCallStatus = eCallStatus_Incoming;
-        else if (status == "dialing")
-            self->mCallStatus = eCallStatus_Dialing;
-
-        if (self->mCallStatus == eCallStatus_Active)
-        {
-            /* com.palm.telephony means a carrier call through the modem's voice
-             * path; anything else (our IM/VoIP connectors) stays on PCM. */
-            self->mCallMode = (transport == "com.palm.telephony") ? eCallMode_Carrier
-                                                                  : eCallMode_Voip;
-            self->updateCallMode();
-        }
-        else if (self->mCallStatus == eCallStatus_Disconnected)
-        {
-            self->mCallMode = eCallMode_None;
-            /* Deliberately called on this path too -- see updateCallMode(). */
-            self->updateCallMode();
-        }
+        for (const auto &name : self->scenariosFor(cat))
+            scenarios.append(name);
     }
 
-    CLSError lserror;
-    if (!LSMessageReply(sh, message, STANDARD_JSON_SUCCESS, &lserror))
-        lserror.Print(__FUNCTION__, __LINE__);
-    return true;
-}
-
-bool PalmLegacyManager::_hacSet(LSHandle *sh, LSMessage *message, void *ctx)
-{
-    PalmLegacyManager *self = getPalmLegacyManagerInstance();
-    LSMessageJsonParser msg(message, SCHEMA_1(OPTIONAL(hac, boolean)));
-    if (!msg.parse(__FUNCTION__, sh))
-        return true;
-
-    bool hac = false;
-    msg.get("hac", hac);
-    if (self)
-    {
-        self->mHac = hac;
-        self->notifyStatusSubscribers();
-    }
-
-    CLSError lserror;
-    if (!LSMessageReply(sh, message, STANDARD_JSON_SUCCESS, &lserror))
-        lserror.Print(__FUNCTION__, __LINE__);
-    return true;
-}
-
-bool PalmLegacyManager::_hacGet(LSHandle *sh, LSMessage *message, void *ctx)
-{
-    PalmLegacyManager *self = getPalmLegacyManagerInstance();
     pbnjson::JValue reply = pbnjson::Object();
     reply.put("returnValue", true);
-    reply.put("hac", self ? self->mHac : false);
+    reply.put("scenarios", scenarios);
+    if (cat && cat->scenarioPrefix)
+        reply.put("scenario", scenarioName(cat, cat->route));
 
-    std::string payload = reply.stringify();
-    CLSError lserror;
-    if (!LSMessageReply(sh, message, payload.c_str(), &lserror))
-        lserror.Print(__FUNCTION__, __LINE__);
+    replyJson(sh, message, reply);
     return true;
 }
 
 bool PalmLegacyManager::_setCurrentScenario(LSHandle *sh, LSMessage *message, void *ctx)
 {
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
+    LegacyCategory *cat = categoryFor(message);
     LSMessageJsonParser msg(message, SCHEMA_1(REQUIRED(scenario, string)));
     if (!msg.parse(__FUNCTION__, sh))
         return true;
@@ -1002,221 +1504,63 @@ bool PalmLegacyManager::_setCurrentScenario(LSHandle *sh, LSMessage *message, vo
     std::string scenario;
     msg.get("scenario", scenario);
 
-    if (self)
+    EPhoneRoute route = ePhoneRoute_Earpiece;
+    CLSError lserror;
+    if (!self || !cat || !routeFromScenario(cat, scenario, &route))
     {
-        if (scenario == "phone_back_speaker")
-        {
-            self->mPhoneRoute = ePhoneRoute_Speaker;
-            self->mSpeakerMode = true;
-        }
-        else if (scenario == "phone_front_speaker")
-        {
-            self->mPhoneRoute = ePhoneRoute_Earpiece;
-            self->mSpeakerMode = false;
-        }
-        else if (scenario == "phone_headset" || scenario == "phone_headset_mic")
-        {
-            self->mPhoneRoute = ePhoneRoute_Headset;
-            self->mSpeakerMode = false;
-        }
-        else if (scenario == "phone_bluetooth_sco")
-        {
-            self->mPhoneRoute = ePhoneRoute_BluetoothSCO;
-            self->mSpeakerMode = false;
-        }
-
-        /* The decompiled 3.0.5 audiod dropped routing changes outright unless
-         * the call was already Active, which silently lost every scenario switch
-         * made while a call was still ringing or dialing. Apply it whenever a
-         * call mode is set, and let updateCallMode() pick it up on the Active
-         * transition otherwise. */
-        if (self->mCallMode != eCallMode_None)
-        {
-            self->applyCallRouting(self->mCallMode, self->mPhoneRoute);
-            self->notifyStatusSubscribers();
-        }
+        const char *reply = STANDARD_JSON_ERROR(AUDIOD_ERRORCODE_INVALID_PARAMS,
+                                                "Unknown scenario for this category");
+        if (!LSMessageReply(sh, message, reply, &lserror))
+            lserror.Print(__FUNCTION__, __LINE__);
+        return true;
     }
 
-    CLSError lserror;
-    if (!LSMessageReply(sh, message, STANDARD_JSON_SUCCESS, &lserror))
-        lserror.Print(__FUNCTION__, __LINE__);
+    if (self->mDisabledScenarios.find(scenario) != self->mDisabledScenarios.end())
+    {
+        const char *reply = STANDARD_JSON_ERROR(AUDIOD_ERRORCODE_INVALID_PARAMS,
+                                                "That scenario is disabled");
+        if (!LSMessageReply(sh, message, reply, &lserror))
+            lserror.Print(__FUNCTION__, __LINE__);
+        return true;
+    }
+
+    cat->route = route;
+
+    if (0 == strcmp(cat->category, "/phone"))
+    {
+        /* The decompiled 3.0.5 audiod dropped routing changes outright unless
+         * the call was already Active, which silently lost every scenario
+         * switch made while a call was still ringing or dialing. Push it
+         * through updateCallMode() instead, which now compares the route as
+         * well as the mode, so a mid-call speakerphone toggle is applied and a
+         * change made while ringing is picked up on the Active transition. */
+        self->updateCallMode();
+    }
+    else
+    {
+        /* Output-device selection for non-call audio belongs to audioRouter in
+         * this generation, and its device names are per-machine. The scenario
+         * is tracked and reported -- which is what com.palm.app.phone's route
+         * picker reads -- but deliberately not turned into a card/port change
+         * here, where it would be a guess. */
+        PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+            "setCurrentScenario(%s): recorded for %s; output device selection is "
+            "audioRouter's to make", scenario.c_str(), cat->category);
+    }
+
+    self->notifyCategory(cat, "changed");
+    replySuccess(sh, message);
     return true;
 }
 
 bool PalmLegacyManager::_getCurrentScenario(LSHandle *sh, LSMessage *message, void *ctx)
 {
-    PalmLegacyManager *self = getPalmLegacyManagerInstance();
-    const char *scenario = "phone_front_speaker";
-    if (self)
-    {
-        switch (self->mPhoneRoute)
-        {
-            case ePhoneRoute_Speaker:       scenario = "phone_back_speaker"; break;
-            case ePhoneRoute_Headset:       scenario = "phone_headset"; break;
-            case ePhoneRoute_BluetoothSCO:  scenario = "phone_bluetooth_sco"; break;
-            case ePhoneRoute_Earpiece:
-            default:                        scenario = "phone_front_speaker"; break;
-        }
-    }
+    LegacyCategory *cat = categoryFor(message);
 
     pbnjson::JValue reply = pbnjson::Object();
     reply.put("returnValue", true);
-    reply.put("scenario", scenario);
-
-    std::string payload = reply.stringify();
-    CLSError lserror;
-    if (!LSMessageReply(sh, message, payload.c_str(), &lserror))
-        lserror.Print(__FUNCTION__, __LINE__);
-    return true;
-}
-
-/* ------------------------------------------------------------------------- *
- * /ringtone
- * ------------------------------------------------------------------------- */
-
-bool PalmLegacyManager::_ringtoneSetMuted(LSHandle *sh, LSMessage *message, void *ctx)
-{
-    PalmLegacyManager *self = getPalmLegacyManagerInstance();
-    LSMessageJsonParser msg(message, SCHEMA_1(OPTIONAL(muted, boolean)));
-    if (!msg.parse(__FUNCTION__, sh))
-        return true;
-
-    bool muted = false;
-    msg.get("muted", muted);
-    if (self)
-        self->mRingtoneMuted = muted;
-
-    CLSError lserror;
-    if (!LSMessageReply(sh, message, STANDARD_JSON_SUCCESS, &lserror))
-        lserror.Print(__FUNCTION__, __LINE__);
-    return true;
-}
-
-bool PalmLegacyManager::_ringtoneStatus(LSHandle *sh, LSMessage *message, void *ctx)
-{
-    PalmLegacyManager *self = getPalmLegacyManagerInstance();
-    CLSError lserror;
-    bool subscribed = false;
-
-    if (!LSSubscriptionProcess(sh, message, &subscribed, &lserror))
-        lserror.Print(__FUNCTION__, __LINE__);
-
-    pbnjson::JValue reply = pbnjson::Object();
-    reply.put("returnValue", true);
-    reply.put("muted", self ? self->mRingtoneMuted : false);
-    if (subscribed)
-        reply.put("subscribed", true);
-
-    std::string payload = reply.stringify();
-    if (!LSMessageReply(sh, message, payload.c_str(), &lserror))
-        lserror.Print(__FUNCTION__, __LINE__);
-    return true;
-}
-
-/* ------------------------------------------------------------------------- *
- * /telephony
- * ------------------------------------------------------------------------- */
-
-bool PalmLegacyManager::_telephonyAnswered(LSHandle *sh, LSMessage *message, void *ctx)
-{
-    /* com.palm.app.phone calls this when a call is picked up, to let audiod tell
-     * a connected Bluetooth headset to stop ringing. Muting the ringtone is the
-     * part that matters locally. */
-    PalmLegacyManager *self = getPalmLegacyManagerInstance();
-    if (self)
-        self->mRingtoneMuted = true;
-
-    CLSError lserror;
-    if (!LSMessageReply(sh, message, STANDARD_JSON_SUCCESS, &lserror))
-        lserror.Print(__FUNCTION__, __LINE__);
-    return true;
-}
-
-/* ------------------------------------------------------------------------- *
- * /dtmf
- * ------------------------------------------------------------------------- */
-
-bool PalmLegacyManager::_playDTMF(LSHandle *sh, LSMessage *message, void *ctx)
-{
-    PalmLegacyManager *self = getPalmLegacyManagerInstance();
-    LSMessageJsonParser msg(message, SCHEMA_1(REQUIRED(name, string)));
-    if (!msg.parse(__FUNCTION__, sh))
-        return true;
-
-    std::string name;
-    msg.get("name", name);
-
-    /* Drive audiod's built-in DTMF tone generator as a short one-shot beep
-     * (PulseAudioMixer::playOneshotDtmf -> fixed-duration PulseDtmfGenerator),
-     * so each playDTMF call is one dialpad tone that stops on its own -- no
-     * paired stopDTMF required and no risk of a stuck tone. name is a single
-     * dialpad character "0".."9", "*" or "#" (see IdToDtmf). There is no
-     * dedicated DTMF virtual sink in the EVirtualSink enum, so route the keypad
-     * tone through the feedback sink, as with the other UI feedback sounds. */
-    if (self && self->mObjAudioMixer)
-        self->mObjAudioMixer->playOneshotDtmf(name.c_str(), efeedback);
-
-    CLSError lserror;
-    if (!LSMessageReply(sh, message, STANDARD_JSON_SUCCESS, &lserror))
-        lserror.Print(__FUNCTION__, __LINE__);
-    return true;
-}
-
-bool PalmLegacyManager::_stopDTMF(LSHandle *sh, LSMessage *message, void *ctx)
-{
-    PalmLegacyManager *self = getPalmLegacyManagerInstance();
-
-    if (self && self->mObjAudioMixer)
-        self->mObjAudioMixer->stopDtmf();
-
-    CLSError lserror;
-    if (!LSMessageReply(sh, message, STANDARD_JSON_SUCCESS, &lserror))
-        lserror.Print(__FUNCTION__, __LINE__);
-    return true;
-}
-
-/* ------------------------------------------------------------------------- *
- * /media, /system, /vvm
- * ------------------------------------------------------------------------- */
-
-bool PalmLegacyManager::_genericStatus(LSHandle *sh, LSMessage *message, void *ctx)
-{
-    PalmLegacyManager *self = getPalmLegacyManagerInstance();
-    CLSError lserror;
-    bool subscribed = false;
-
-    if (!LSSubscriptionProcess(sh, message, &subscribed, &lserror))
-        lserror.Print(__FUNCTION__, __LINE__);
-
-    pbnjson::JValue reply = pbnjson::Object();
-    reply.put("returnValue", true);
-    reply.put("volume", self ? self->mVolume : 0);
-    reply.put("muted", self ? self->mMuted : false);
-    if (subscribed)
-        reply.put("subscribed", true);
-
-    std::string payload = reply.stringify();
-    if (!LSMessageReply(sh, message, payload.c_str(), &lserror))
-        lserror.Print(__FUNCTION__, __LINE__);
-    return true;
-}
-
-bool PalmLegacyManager::_genericSetVolume(LSHandle *sh, LSMessage *message, void *ctx)
-{
-    return _setVolume(sh, message, ctx);
-}
-
-bool PalmLegacyManager::_genericGetVolume(LSHandle *sh, LSMessage *message, void *ctx)
-{
-    PalmLegacyManager *self = getPalmLegacyManagerInstance();
-    pbnjson::JValue reply = pbnjson::Object();
-    reply.put("returnValue", true);
-    reply.put("volume", self ? self->mVolume : 0);
-
-    std::string payload = reply.stringify();
-    CLSError lserror;
-    if (!LSMessageReply(sh, message, payload.c_str(), &lserror))
-        lserror.Print(__FUNCTION__, __LINE__);
+    reply.put("scenario", cat ? scenarioName(cat, cat->route) : std::string());
+    replyJson(sh, message, reply);
     return true;
 }
 
@@ -1240,17 +1584,453 @@ bool PalmLegacyManager::_lockVolumeKeys(LSHandle *sh, LSMessage *message, void *
     if (subscribed)
         reply.put("subscribed", true);
 
-    std::string payload = reply.stringify();
-    if (!LSMessageReply(sh, message, payload.c_str(), &lserror))
-        lserror.Print(__FUNCTION__, __LINE__);
+    replyJson(sh, message, reply);
     return true;
 }
 
 bool PalmLegacyManager::_vvmControl(LSHandle *sh, LSMessage *message, void *ctx)
 {
+    /* The voicemail drawer's speakerphone button: {"active":true} asks for the
+     * back speaker, false for the earpiece. */
+    PalmLegacyManager *self = getPalmLegacyManagerInstance();
+    LegacyCategory *cat = categoryFor(message);
+    LSMessageJsonParser msg(message, SCHEMA_2(OPTIONAL(active, boolean),
+                                              OPTIONAL(scenario, string)));
+    if (!msg.parse(__FUNCTION__, sh))
+        return true;
+
+    bool active = false;
+    std::string scenario;
+
+    if (self && cat)
+    {
+        if (msg.get("scenario", scenario))
+        {
+            EPhoneRoute route = ePhoneRoute_Earpiece;
+            if (routeFromScenario(cat, scenario, &route))
+                cat->route = route;
+        }
+        else if (msg.get("active", active))
+        {
+            cat->route = active ? ePhoneRoute_Speaker : ePhoneRoute_Earpiece;
+        }
+        self->notifyCategory(cat, "changed");
+    }
+
+    pbnjson::JValue reply = pbnjson::Object();
+    reply.put("returnValue", true);
+    if (cat)
+        reply.put("scenario", scenarioName(cat, cat->route));
+    replyJson(sh, message, reply);
+    return true;
+}
+
+/* ------------------------------------------------------------------------- *
+ * /phone
+ * ------------------------------------------------------------------------- */
+
+bool PalmLegacyManager::_phoneSetMuted(LSHandle *sh, LSMessage *message, void *ctx)
+{
+    PalmLegacyManager *self = getPalmLegacyManagerInstance();
+    LSMessageJsonParser msg(message, SCHEMA_1(REQUIRED(muted, boolean)));
+    if (!msg.parse(__FUNCTION__, sh))
+        return true;
+
+    bool muted = false;
+    msg.get("muted", muted);
+
+    if (self)
+    {
+        self->mPhoneMuted = muted;
+        /* On Palm hardware muting the call muted the capture path, not the
+         * playback one -- the far end stops hearing you, you keep hearing them. */
+        self->mMicMuted = muted;
+        LegacyCategory *phone = categoryByName("/phone");
+        self->applyCallRouting(self->mCallMode,
+                               phone ? phone->route : ePhoneRoute_Earpiece);
+        self->notifyStatusSubscribers();
+    }
+
+    replySuccess(sh, message);
+    return true;
+}
+
+/*
+ * phone/CallStatusUpdate
+ *
+ * com.palm.app.phone sends {"lines":[...]}, one entry per line, each carrying a
+ * "state" and a "calls" array whose first element names the transport. This is
+ * the contract audiod-pro's own _callStatusUpdate implements and the one
+ * CallSynergizer.js actually speaks; the {transport,status} shape this module
+ * used to declare matched nothing, and because SCHEMA_n sets
+ * additionalProperties:false every real update was rejected before it arrived.
+ */
+bool PalmLegacyManager::_callStatusUpdate(LSHandle *sh, LSMessage *message, void *ctx)
+{
+    PalmLegacyManager *self = getPalmLegacyManagerInstance();
+    LSMessageJsonParser msg(message, SCHEMA_1(REQUIRED(lines, array)));
+    if (!msg.parse(__FUNCTION__, sh))
+        return true;
+
+    if (!self)
+    {
+        replySuccess(sh, message);
+        return true;
+    }
+
+    pbnjson::JValue lines = msg.get()["lines"];
+    if (!lines.isArray())
+    {
+        replySuccess(sh, message);
+        return true;
+    }
+
+    auto statusFromString = [](const std::string &s) {
+        if (s == "active")      return eCallStatus_Active;
+        if (s == "incoming")    return eCallStatus_Incoming;
+        if (s == "connecting")  return eCallStatus_Connecting;
+        if (s == "dialing")     return eCallStatus_Dialing;
+        if (s == "onHold")      return eCallStatus_OnHold;
+        if (s == "disconnected") return eCallStatus_Disconnected;
+        return eCallStatus_NoCall;
+    };
+
+    /* "No calls at all" is reported as an empty array rather than a line in
+     * state "disconnected". Without this the loop below never runs, the call
+     * mode is never reset, and every getOnActiveCall()-gated behaviour stays
+     * stuck on the last call for the life of the process. Found on real
+     * hardware during the TouchPad port; carried over verbatim. */
+    if (0 == lines.arraySize())
+    {
+        self->mCarrierStatus = eCallStatus_Disconnected;
+        self->mVoipStatus = eCallStatus_Disconnected;
+        self->mCallWithVideo = false;
+        self->applyCallStatus();
+        replySuccess(sh, message);
+        return true;
+    }
+
+    bool sawCarrier = false, sawVoip = false;
+    bool withVideo = false;
+
+    for (ssize_t i = 0; i < lines.arraySize(); i++)
+    {
+        std::string state;
+        std::string transport;
+
+        if (lines[i]["state"].asString(state) != CONV_OK)
+        {
+            PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+                "CallStatusUpdate: line %zd has no state", (ssize_t) i);
+            continue;
+        }
+
+        pbnjson::JValue calls = lines[i]["calls"];
+        if (calls.isArray() && calls.arraySize() > 0)
+            calls[0]["transport"].asString(transport);
+
+        const ECallStatus status = statusFromString(state);
+
+        /* com.palm.telephony is the carrier stack; anything else (our IM/VoIP
+         * connectors) stays on the normal PCM path. */
+        if (transport == "com.palm.telephony")
+        {
+            sawCarrier = true;
+            self->mCarrierStatus = status;
+        }
+        else
+        {
+            sawVoip = true;
+            self->mVoipStatus = status;
+
+            bool outgoingVideo = false, incomingVideo = false;
+            lines[i]["outgoingVideo"].asBool(outgoingVideo);
+            lines[i]["incomingVideo"].asBool(incomingVideo);
+            if (outgoingVideo || incomingVideo)
+                withVideo = true;
+        }
+    }
+
+    if (!sawCarrier)
+        self->mCarrierStatus = eCallStatus_Disconnected;
+    if (!sawVoip)
+        self->mVoipStatus = eCallStatus_Disconnected;
+    self->mCallWithVideo = withVideo;
+
+    self->applyCallStatus();
+
+    replySuccess(sh, message);
+    return true;
+}
+
+bool PalmLegacyManager::_hacSet(LSHandle *sh, LSMessage *message, void *ctx)
+{
+    PalmLegacyManager *self = getPalmLegacyManagerInstance();
+    /* The phone app's accessibility panel sends {"enable":bool}; "hac" was
+     * never the parameter name. */
+    LSMessageJsonParser msg(message, SCHEMA_2(OPTIONAL(enable, boolean),
+                                              OPTIONAL(hac, boolean)));
+    if (!msg.parse(__FUNCTION__, sh))
+        return true;
+
+    bool hac = false;
+    if (!msg.get("enable", hac))
+        msg.get("hac", hac);
+
+    if (self && self->mHac != hac)
+    {
+        self->mHac = hac;
+        /* Not just a flag any more: this takes the speakerphone out of service
+         * and puts the call on the earpiece. */
+        self->applyHac();
+        self->notifyStatusSubscribers();
+    }
+
+    replySuccess(sh, message);
+    return true;
+}
+
+bool PalmLegacyManager::_hacGet(LSHandle *sh, LSMessage *message, void *ctx)
+{
+    PalmLegacyManager *self = getPalmLegacyManagerInstance();
     CLSError lserror;
-    if (!LSMessageReply(sh, message, STANDARD_JSON_SUCCESS, &lserror))
+    bool subscribed = false;
+
+    /* webOS 3.0.5's _hacGet is subscribable and answers with "enabled", not
+     * "hac" -- "hac" is the spelling the /phone/status payload uses. */
+    if (LSMessageIsSubscription(message) &&
+        !LSSubscriptionProcess(sh, message, &subscribed, &lserror))
         lserror.Print(__FUNCTION__, __LINE__);
+
+    pbnjson::JValue reply = pbnjson::Object();
+    reply.put("returnValue", true);
+    reply.put("enabled", self ? self->mHac : false);
+    reply.put("subscribed", subscribed);
+    replyJson(sh, message, reply);
+    return true;
+}
+
+bool PalmLegacyManager::_enableScenario(LSHandle *sh, LSMessage *message, void *ctx)
+{
+    PalmLegacyManager *self = getPalmLegacyManagerInstance();
+    LegacyCategory *cat = categoryFor(message);
+    LSMessageJsonParser msg(message, SCHEMA_1(REQUIRED(scenario, string)));
+    if (!msg.parse(__FUNCTION__, sh))
+        return true;
+
+    std::string scenario;
+    msg.get("scenario", scenario);
+
+    EPhoneRoute route = ePhoneRoute_Earpiece;
+    CLSError lserror;
+    if (!self || !cat || !routeFromScenario(cat, scenario, &route))
+    {
+        const char *reply = STANDARD_JSON_ERROR(AUDIOD_ERRORCODE_INVALID_PARAMS,
+                                                "Unknown scenario for this category");
+        if (!LSMessageReply(sh, message, reply, &lserror))
+            lserror.Print(__FUNCTION__, __LINE__);
+        return true;
+    }
+
+    self->mDisabledScenarios.erase(scenario);
+    self->notifyCategory(cat, "enabled");
+    replySuccess(sh, message);
+    return true;
+}
+
+bool PalmLegacyManager::_disableScenario(LSHandle *sh, LSMessage *message, void *ctx)
+{
+    PalmLegacyManager *self = getPalmLegacyManagerInstance();
+    LegacyCategory *cat = categoryFor(message);
+    LSMessageJsonParser msg(message, SCHEMA_1(REQUIRED(scenario, string)));
+    if (!msg.parse(__FUNCTION__, sh))
+        return true;
+
+    std::string scenario;
+    msg.get("scenario", scenario);
+
+    EPhoneRoute route = ePhoneRoute_Earpiece;
+    CLSError lserror;
+    if (!self || !cat || !routeFromScenario(cat, scenario, &route))
+    {
+        const char *reply = STANDARD_JSON_ERROR(AUDIOD_ERRORCODE_INVALID_PARAMS,
+                                                "Unknown scenario for this category");
+        if (!LSMessageReply(sh, message, reply, &lserror))
+            lserror.Print(__FUNCTION__, __LINE__);
+        return true;
+    }
+
+    self->mDisabledScenarios.insert(scenario);
+
+    /* Disabling the scenario currently in use has to move the audio somewhere,
+     * or the category is left pointing at a route it may no longer have. */
+    if (cat->route == route)
+    {
+        cat->route = ePhoneRoute_Earpiece;
+        if (0 == strcmp(cat->category, "/phone"))
+            self->updateCallMode();
+    }
+
+    self->notifyCategory(cat, "disabled");
+    replySuccess(sh, message);
+    return true;
+}
+
+/* ------------------------------------------------------------------------- *
+ * /telephony
+ * ------------------------------------------------------------------------- */
+
+bool PalmLegacyManager::_telephonyAnswered(LSHandle *sh, LSMessage *message, void *ctx)
+{
+    /* com.palm.app.phone calls this when a call is picked up, to let audiod tell
+     * a connected Bluetooth headset to stop ringing. Silencing the ringtone is
+     * the part that matters locally -- and it has to actually silence it, which
+     * means muting the ringtone stream rather than only noting it. */
+    PalmLegacyManager *self = getPalmLegacyManagerInstance();
+    LSMessageJsonParser msg(message, SCHEMA_1(OPTIONAL(client, string)));
+    if (!msg.parse(__FUNCTION__, sh))
+        return true;
+
+    AudioPolicyManager *policy = AudioPolicyManager::getAudioPolicyManagerInstance();
+    LegacyCategory *ringtone = categoryByName("/ringtone");
+    if (self && policy && ringtone && ringtone->streamType)
+    {
+        policy->setStreamMute(ringtone->streamType, true);
+        self->notifyCategory(ringtone, "changed");
+    }
+
+    replySuccess(sh, message);
+    return true;
+}
+
+/* ------------------------------------------------------------------------- *
+ * /dtmf
+ * ------------------------------------------------------------------------- */
+
+bool PalmLegacyManager::_playDTMF(LSHandle *sh, LSMessage *message, void *ctx)
+{
+    PalmLegacyManager *self = getPalmLegacyManagerInstance();
+    /* The dialpad sends {"id":"5","oneshot":true,"feedbackOnly":false} -- "id",
+     * not "name", and the other two decide whether the tone also has to reach
+     * the far end. */
+    LSMessageJsonParser msg(message, SCHEMA_4(REQUIRED(id, string),
+                                              OPTIONAL(oneshot, boolean),
+                                              OPTIONAL(feedbackOnly, boolean),
+                                              OPTIONAL(name, string)));
+    if (!msg.parse(__FUNCTION__, sh))
+        return true;
+
+    std::string id;
+    bool oneshot = true;
+    bool feedbackOnly = false;
+
+    if (!msg.get("id", id))
+        msg.get("name", id);
+    if (!msg.get("oneshot", oneshot))
+        oneshot = true;
+    msg.get("feedbackOnly", feedbackOnly);
+
+    CLSError lserror;
+    for (const char ch : id)
+    {
+        if ((ch < '0' || ch > '9') && ch != '*' && ch != '#')
+        {
+            const char *reply = STANDARD_JSON_ERROR(AUDIOD_ERRORCODE_INVALID_PARAMS,
+                                                    "id must be dialpad characters 0-9, * or #");
+            if (!LSMessageReply(sh, message, reply, &lserror))
+                lserror.Print(__FUNCTION__, __LINE__);
+            return true;
+        }
+    }
+
+    /* During a call the tone has to be generated by the network, or the far end
+     * hears nothing and IVR menus cannot be driven. feedbackOnly says the
+     * caller only wants the local beep. */
+    if (self && self->mCallMode != eCallMode_None && !feedbackOnly)
+    {
+        LSHandle *audiod = self->legacyHandle();
+        pbnjson::JValue payload = pbnjson::Object();
+        const char *uri = nullptr;
+
+        if (oneshot)
+        {
+            payload.put("toneSequence", id);
+            uri = "luna://com.palm.telephony/sendDtmf";
+        }
+        else
+        {
+            payload.put("tone", id.substr(0, 1));
+            uri = "luna://com.palm.telephony/dtmfStartLong";
+        }
+
+        const std::string body = payload.stringify();
+        if (audiod && !LSCall(audiod, uri, body.c_str(), nullptr, nullptr, nullptr, &lserror))
+        {
+            lserror.Print(__FUNCTION__, __LINE__);
+            PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+                "playDTMF: could not relay the tone to com.palm.telephony");
+        }
+    }
+
+    /* Local feedback tone. audiod's generator plays a fixed-duration one-shot
+     * that fades out on its own, so a missed release cannot leave a tone stuck
+     * on. This generation's EVirtualSink has no eDTMF, so the keypad tone goes
+     * through the feedback sink like the other UI sounds. */
+    if (self && self->mObjAudioMixer && !id.empty())
+        self->mObjAudioMixer->playOneshotDtmf(id.substr(0, 1).c_str(), efeedback);
+
+    replySuccess(sh, message);
+    return true;
+}
+
+bool PalmLegacyManager::_stopDTMF(LSHandle *sh, LSMessage *message, void *ctx)
+{
+    PalmLegacyManager *self = getPalmLegacyManagerInstance();
+    CLSError lserror;
+
+    if (self && self->mCallMode != eCallMode_None)
+    {
+        LSHandle *audiod = self->legacyHandle();
+        if (audiod && !LSCall(audiod, "luna://com.palm.telephony/dtmfEndLong", "{}",
+                              nullptr, nullptr, nullptr, &lserror))
+            lserror.Print(__FUNCTION__, __LINE__);
+    }
+
+    if (self && self->mObjAudioMixer)
+        self->mObjAudioMixer->stopDtmf();
+
+    replySuccess(sh, message);
+    return true;
+}
+
+/* ------------------------------------------------------------------------- *
+ * /state
+ * ------------------------------------------------------------------------- */
+
+bool PalmLegacyManager::_setRingerSwitch(LSHandle *sh, LSMessage *message, void *ctx)
+{
+    PalmLegacyManager *self = getPalmLegacyManagerInstance();
+    LSMessageJsonParser msg(message, SCHEMA_1(REQUIRED(ringtone, boolean)));
+    if (!msg.parse(__FUNCTION__, sh))
+        return true;
+
+    bool ringerOn = true;
+    msg.get("ringtone", ringerOn);
+
+    AudioPolicyManager *policy = AudioPolicyManager::getAudioPolicyManagerInstance();
+    LegacyCategory *ringtone = categoryByName("/ringtone");
+    if (self)
+    {
+        self->mRingerOn = ringerOn;
+        /* A silenced ringer switch means the ringtone stream is muted -- that
+         * is the audible half com.palm.app.clock's read of /system/status
+         * assumes has happened. */
+        if (policy && ringtone && ringtone->streamType)
+            policy->setStreamMute(ringtone->streamType, !ringerOn);
+        self->notifyStatusSubscribers();
+    }
+
+    replySuccess(sh, message);
     return true;
 }
 
@@ -1261,22 +2041,44 @@ bool PalmLegacyManager::_vvmControl(LSHandle *sh, LSMessage *message, void *ctx)
 bool PalmLegacyManager::_playFeedback(LSHandle *sh, LSMessage *message, void *ctx)
 {
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
-    LSMessageJsonParser msg(message, SCHEMA_3(REQUIRED(name, string),
+    /* Matches the Palm schema: enyo passes override and type on some paths and
+     * an additionalProperties:false schema without them rejects the call. */
+    LSMessageJsonParser msg(message, SCHEMA_5(REQUIRED(name, string),
                                               OPTIONAL(sink, string),
-                                              OPTIONAL(play, boolean)));
+                                              OPTIONAL(play, boolean),
+                                              OPTIONAL(override, boolean),
+                                              OPTIONAL(type, string)));
     if (!msg.parse(__FUNCTION__, sh))
         return true;
 
     std::string name;
+    std::string sinkName;
     bool play = true;
     msg.get("name", name);
-    msg.get("play", play);
+    msg.get("sink", sinkName);
+    if (!msg.get("play", play))
+        play = true;
 
     if (play && self && self->mObjAudioMixer)
-        self->mObjAudioMixer->playSystemSound(name.c_str(), efeedback);
+    {
+        /* The Palm API lets a caller name the sink the feedback should go to;
+         * honour it when it names a stream this generation still has, and fall
+         * back to the feedback sink otherwise. */
+        EVirtualAudioSink sink = efeedback;
+        AudioPolicyManager *policy = AudioPolicyManager::getAudioPolicyManagerInstance();
+        if (!sinkName.empty() && policy)
+        {
+            EVirtualAudioSink named = policy->sinkForStream(sinkName);
+            if (named != eVirtualSink_None)
+                sink = named;
+            else
+                PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+                    "playFeedback: no sink named '%s' here; using the feedback sink",
+                    sinkName.c_str());
+        }
+        self->mObjAudioMixer->playSystemSound(name.c_str(), sink);
+    }
 
-    CLSError lserror;
-    if (!LSMessageReply(sh, message, STANDARD_JSON_SUCCESS, &lserror))
-        lserror.Print(__FUNCTION__, __LINE__);
+    replySuccess(sh, message);
     return true;
 }

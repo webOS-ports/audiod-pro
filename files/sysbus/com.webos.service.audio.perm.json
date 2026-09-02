@@ -4,6 +4,8 @@
         "settings.management",
         "bluetooth.query",
         "physicaldevice.query",
-        "audiooutput.management"
+        "audiooutput.management",
+        "audio.query",
+        "audio.operation"
     ]
 }
