@@ -44,7 +44,7 @@ struct deviceInfo
     std::string deviceNameDetail;
     int volume;
     bool connected;
-    deviceInfo():connected(false),volume(100){}
+    deviceInfo():volume(100),connected(false){}
     deviceInfo(std::string deviceName, std::string deviceNameDetail,int volume):deviceName(deviceName),
         deviceNameDetail(deviceNameDetail), volume(volume),connected(false) { }
 };
