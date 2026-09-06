@@ -918,16 +918,20 @@ void PalmLegacyManager::paSinkInfoCb(pa_context *c, const pa_sink_info *info, in
     if (!earpiece)
         return;
 
+    /* The route is the only trustworthy plug signal here: droid cards report
+     * every port as available (no jack detection at the PulseAudio level), so
+     * "headphone port available" must never override an earpiece route or the
+     * whole call goes out an unplugged jack. */
     if (req->mode != eCallMode_None)
     {
         switch (req->route)
         {
             case ePhoneRoute_Speaker:       preferred = speaker; break;
             case ePhoneRoute_Headset:
-            case ePhoneRoute_HeadsetMic:    preferred = headphones; break;
+            case ePhoneRoute_HeadsetMic:    preferred = headphones ? headphones : earpiece; break;
             case ePhoneRoute_BluetoothSCO:  preferred = nullptr; break;  /* handled by the BT card */
             case ePhoneRoute_Earpiece:
-            default:                        preferred = headphones ? headphones : earpiece; break;
+            default:                        preferred = earpiece; break;
         }
     }
 
@@ -988,7 +992,12 @@ void PalmLegacyManager::paSourceInfoCb(pa_context *c, const pa_source_info *info
     if (!builtinMic)
         return;     /* Not the handset's own capture source. */
 
-    preferred = headsetMic ? headsetMic : builtinMic;
+    /* Same as the sink walk: droid ports always claim to be available, so the
+     * headset mic is only used when the route says one is plugged in. */
+    if (req->route == ePhoneRoute_HeadsetMic)
+        preferred = headsetMic ? headsetMic : builtinMic;
+    else
+        preferred = builtinMic;
 
     if (preferred && preferred != info->active_port)
     {
