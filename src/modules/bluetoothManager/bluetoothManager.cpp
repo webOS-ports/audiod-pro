@@ -73,7 +73,6 @@ bool BluetoothManager::initializeBluetoothConfigurationInfo()
         for (const pbnjson::JValue& elements : bluetoothConfigurationInfo.items())
         {
             int displays = elements["displays"].asNumber<int>();
-            int adapters = elements["adapters"].asNumber<int>();
             if (elements["adapterNameKey"].asString(mAdapterNameKey) == CONV_OK)
                 PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,"BluetoothManager::initializeBluetoothConfigurationInfo: Successfully read adapterNameKey %s",
                 mAdapterNameKey.c_str());
@@ -253,7 +252,7 @@ void BluetoothManager::btAdapterQueryInfo(LSMessage *message)
         }
         bool status = false;
 
-        PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,"adapters array size is %d", adapters.arraySize());
+        PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,"adapters array size is %zd", adapters.arraySize());
         for (int i = 0; i < adapters.arraySize(); i++)
         {
             std::string adapterName = adapters[i][mAdapterNameKey].asString();
@@ -533,7 +532,6 @@ void BluetoothManager::a2dpDeviceGetStatus (LSMessage *message)
 {
     PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
         "%s ", __FUNCTION__);
-    bool result = false;
 
     std::string payload = LSMessageGetPayload(message);
 
@@ -627,7 +625,6 @@ void BluetoothManager::eventServerStatusInfo(SERVER_TYPE_E serviceName, bool con
 {
     PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
         "Got BT server status event %d : %d", serviceName, connected);
-    BluetoothManager *btManagerInstance = BluetoothManager::getBluetoothManagerInstance();
     if (connected && serviceName == eBluetoothService2)
     {
         PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
