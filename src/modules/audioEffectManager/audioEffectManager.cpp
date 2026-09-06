@@ -264,7 +264,6 @@ bool AudioEffectManager::_getAudioEffectsStatus(LSHandle *lshandle, LSMessage *m
 
     std::string reply ;
     CLSError lserror;
-    bool returnValue = true;
     bool subscribed = false;
     msg.get("subscribe", subscribed);
 
@@ -487,7 +486,7 @@ bool AudioEffectManager::_setAudioEqualizerPreset(LSHandle *lshandle, LSMessage 
 
 void AudioEffectManager::handleEvent(events::EVENTS_T *event)
 {
-    switch(event->eventName)
+    switch((int)event->eventName)
     {
         case  utils::eEventDeviceConnectionStatus:
         {

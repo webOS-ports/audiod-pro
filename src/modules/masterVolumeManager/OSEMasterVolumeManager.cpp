@@ -123,7 +123,7 @@ bool OSEMasterVolumeManager::readInitialVolume(pbnjson::JValue settingsObj)
         for (auto &it:mConnectedDevicesList)
         {
             PM_LOG_INFO(MSGID_CLIENT_MASTER_VOLUME_MANAGER, INIT_KVCOUNT,"connected afterwards it.deviceName : %s, it.deviceNameDetail : %s, it.isOutput :%d", \
-                it.deviceName, it.deviceNameDetail, it.isOutput);
+                it.deviceName.c_str(), it.deviceNameDetail.c_str(), it.isOutput);
             deviceConnectOp(it.deviceName, it.deviceNameDetail, it.isOutput);
         }
     }
@@ -163,10 +163,10 @@ void OSEMasterVolumeManager::sendDataToDB()
 
     PM_LOG_INFO(MSGID_CLIENT_MASTER_VOLUME_MANAGER, INIT_KVCOUNT,"DB output %s", finalString.stringify().c_str());
     //call set settings
-    bool result = false;
     CLSError lserror;
     LSHandle *sh = GetPalmService();
-    result = LSCall(sh, SETSETTINGS, finalString.stringify().c_str(),nullptr,nullptr,nullptr, &lserror);
+    if (!LSCall(sh, SETSETTINGS, finalString.stringify().c_str(),nullptr,nullptr,nullptr, &lserror))
+        lserror.Print(__FUNCTION__, __LINE__);
 
     finalString = pbnjson::JObject();
     count = 1;
@@ -192,7 +192,8 @@ void OSEMasterVolumeManager::sendDataToDB()
     finalString.put("settings",devicedata);
     finalString.put("category","sound");
     PM_LOG_INFO(MSGID_CLIENT_MASTER_VOLUME_MANAGER, INIT_KVCOUNT,"DB input %s", finalString.stringify().c_str());
-    result = LSCall(sh, SETSETTINGS, finalString.stringify().c_str(),nullptr,nullptr,nullptr, &lserror);
+    if (!LSCall(sh, SETSETTINGS, finalString.stringify().c_str(),nullptr,nullptr,nullptr, &lserror))
+        lserror.Print(__FUNCTION__, __LINE__);
 }
 
 void OSEMasterVolumeManager::printDb()
@@ -636,7 +637,6 @@ void OSEMasterVolumeManager::setMicVolume(LSHandle *lshandle, LSMessage *message
     std::string reply = STANDARD_JSON_SUCCESS;
     bool isSoundInputfound =false;
     int deviceDisplay=DISPLAY_ONE;
-    bool noDeviceConnected = false;
 
     if(!msg.get("displayId", display))
     {
@@ -669,7 +669,6 @@ void OSEMasterVolumeManager::setMicVolume(LSHandle *lshandle, LSMessage *message
         if (soundInput.empty())
         {
             PM_LOG_INFO(MSGID_CLIENT_MASTER_VOLUME_MANAGER, INIT_KVCOUNT, "OSEMasterVolumeManager: setMicVolume No device connected or active,");
-            noDeviceConnected = true;
             soundInput = "pcm_input";
         }
     }
@@ -771,7 +770,7 @@ bool OSEMasterVolumeManager::updateMasterVolumeInMap(std::string deviceName, int
         {
             if(it.deviceName == deviceName)
             {
-                PM_LOG_INFO(MSGID_CLIENT_MASTER_VOLUME_MANAGER, INIT_KVCOUNT, "updateMasterVolumeInMap updating volume of %s to %d", deviceName, volume);
+                PM_LOG_INFO(MSGID_CLIENT_MASTER_VOLUME_MANAGER, INIT_KVCOUNT, "updateMasterVolumeInMap updating volume of %s to %d", deviceName.c_str(), volume);
                 it.volume = volume;
                 break;
             }
@@ -785,7 +784,7 @@ bool OSEMasterVolumeManager::updateMasterVolumeInMap(std::string deviceName, int
         {
             if(it.deviceNameDetail == modDevice)
             {
-                PM_LOG_INFO(MSGID_CLIENT_MASTER_VOLUME_MANAGER, INIT_KVCOUNT, "updateMasterVolumeInMap updating volume of %s to %d", modDevice, volume);
+                PM_LOG_INFO(MSGID_CLIENT_MASTER_VOLUME_MANAGER, INIT_KVCOUNT, "updateMasterVolumeInMap updating volume of %s to %d", modDevice.c_str(), volume);
                 it.volume = volume;
                 break;
             }
@@ -841,7 +840,6 @@ bool OSEMasterVolumeManager::_setMicVolumeCallBackPA(LSHandle *sh, LSMessage *re
        return true;
     }
 
-    LSMessage *message = (LSMessage*)envelope->message;
     OSEMasterVolumeManager* OSEMasterVolumeManagerObj = (OSEMasterVolumeManager*)envelope->context;
     if (soundInput.empty())
     {
@@ -931,7 +929,6 @@ bool OSEMasterVolumeManager::_setVolumeCallBackPA(LSHandle *sh, LSMessage *reply
        return true;
     }
 
-    LSMessage *message = (LSMessage*)envelope->message;
     OSEMasterVolumeManager* OSEMasterVolumeManagerObj = (OSEMasterVolumeManager*)envelope->context;
 
 
@@ -1233,7 +1230,6 @@ void OSEMasterVolumeManager::muteVolume(LSHandle *lshandle, LSMessage *message, 
     AudioMixer* audioMixerObj = AudioMixer::getAudioMixerInstance();
     std::string callerId = LSMessageGetSenderServiceName(message);
     envelope = new (std::nothrow)envelopeRef;
-    bool found = false;
 
     if (nullptr != envelope)
     {
@@ -1375,7 +1371,6 @@ void OSEMasterVolumeManager::muteMic(LSHandle *lshandle, LSMessage *message, voi
     std::string reply = STANDARD_JSON_SUCCESS;
     bool isSoundInputfound =false;
     int deviceDisplay=DISPLAY_ONE;
-    bool noDeviceConnected = false;
 
 
     msg.get("mute", mute);
@@ -1413,7 +1408,6 @@ void OSEMasterVolumeManager::muteMic(LSHandle *lshandle, LSMessage *message, voi
         if (soundInput.empty())
         {
             PM_LOG_INFO(MSGID_CLIENT_MASTER_VOLUME_MANAGER, INIT_KVCOUNT, "OSEMasterVolumeManager: setMicVolume No device connected or active,");
-            noDeviceConnected = true;
             soundInput = "pcm_input";
         }
     }
@@ -1733,7 +1727,6 @@ void OSEMasterVolumeManager::volumeUp(LSHandle *lshandle, LSMessage *message, vo
     PM_LOG_INFO(MSGID_CLIENT_MASTER_VOLUME_MANAGER, INIT_KVCOUNT, "MasterVolume: volumeUp with soundout: %s", soundOutput.c_str());
     std::string callerId = LSMessageGetSenderServiceName(message);
     AudioMixer *audioMixerInstance = AudioMixer::getAudioMixerInstance();
-    bool found=false;
 
     envelopeRef *envelope = new (std::nothrow)envelopeRef;
     if(nullptr != envelope)
@@ -1965,7 +1958,6 @@ void OSEMasterVolumeManager::volumeDown(LSHandle *lshandle, LSMessage *message, 
     int displayVol = MIN_VOLUME;
     int display = DISPLAY_ONE;
     std::string reply = STANDARD_JSON_SUCCESS;
-    bool found = false;
 
     bool isSoundOutputfound = false;
     int deviceDisplay = DISPLAY_ONE;
@@ -2160,7 +2152,6 @@ bool OSEMasterVolumeManager::_volumeDownCallBackPA(LSHandle *sh, LSMessage *repl
        return true;
     }
 
-    LSMessage *message = (LSMessage*)envelope->message;
     OSEMasterVolumeManager* OSEMasterVolumeManagerObj = (OSEMasterVolumeManager*)envelope->context;
 
     std::string callerId = LSMessageGetSenderServiceName(reply);
@@ -2336,7 +2327,6 @@ void OSEMasterVolumeManager::setSoundOutputInfo(utils::mapSoundDevicesInfo sound
     for (auto it:soundOutputInfo)
     {
         PM_LOG_INFO(MSGID_CLIENT_MASTER_VOLUME_MANAGER, INIT_KVCOUNT, "%s",it.first.c_str());
-        int displayId = getDisplayId(it.first);
         for (auto& it2: it.second)
         {
             PM_LOG_INFO(MSGID_CLIENT_MASTER_VOLUME_MANAGER, INIT_KVCOUNT, "%s",it2.c_str());
@@ -2352,7 +2342,6 @@ void OSEMasterVolumeManager::setSoundInputInfo(utils::mapSoundDevicesInfo soundI
     PM_LOG_INFO(MSGID_CLIENT_MASTER_VOLUME_MANAGER, INIT_KVCOUNT, "OSEMasterVolumeManager::setSoundInputInfo");
     for (auto it:soundInputInfo)
     {
-        int displayId = getDisplayId(it.first);
         PM_LOG_INFO(MSGID_CLIENT_MASTER_VOLUME_MANAGER, INIT_KVCOUNT, "%s",it.first.c_str());
         for (auto& it2: it.second)
         {
@@ -2636,7 +2625,6 @@ bool OSEMasterVolumeManager::DBSetVoulumeCallbackPA(LSHandle *sh, LSMessage *rep
     {
         masterVolumeCallbackDetails *envelope = (masterVolumeCallbackDetails*)ctx;
         OSEMasterVolumeManager *obj = (OSEMasterVolumeManager*)envelope->context;
-        int volume = envelope->volume;
         std::string device(envelope->deviceName);
         if (envelope->isOutput)
         {
@@ -2747,7 +2735,7 @@ void OSEMasterVolumeManager::deviceDisconnectOp(std::string deviceName, std::str
             deviceNameDetail = getDeviceNameDetail(deviceName, 0, isOutput);
             //deviceNameDetail = deviceNameMap[deviceName];
         //To check if the entry exist in DB struct. ideally should be present
-        int volume = getVolumeFromDB(deviceNameDetail, isOutput, false, found);
+        getVolumeFromDB(deviceNameDetail, isOutput, false, found);
         if (found)
         {
             //reorder the list to move the disconnected device to end of connected list.
@@ -2775,7 +2763,6 @@ void OSEMasterVolumeManager::eventDeviceConnectionStatus(const std::string &devi
 
     if (deviceStatus == utils::eDeviceConnected)
     {
-        bool found;
         std::string modDeviceName;
         if (deviceName.find("bluez") != deviceName.npos)
         {
@@ -2801,7 +2788,6 @@ void OSEMasterVolumeManager::eventDeviceConnectionStatus(const std::string &devi
     else if ((deviceStatus == utils::eDeviceDisconnected))
     {
 
-        bool found = false;
         std::string modDeviceName;
         modDeviceName = getMappedName(deviceName);
         if (mCacheRead)
@@ -2863,13 +2849,13 @@ void OSEMasterVolumeManager::eventServerStatusInfo(SERVER_TYPE_E serviceName, bo
         PM_LOG_INFO(MSGID_CLIENT_MASTER_VOLUME_MANAGER, INIT_KVCOUNT,\
             "Settingsservice service is connected");
         std::string payload = "{\"category\":\"sound\",\"keys\":[\"soundOutputList\",\"soundInputList\"]}";
-        bool result = false;
         CLSError lserror;
         LSHandle *sh = GetPalmService();
         PM_LOG_INFO(MSGID_CLIENT_MASTER_VOLUME_MANAGER, INIT_KVCOUNT,\
             "payload = %s",payload.c_str());
            void *ptrOSEMasterVolumeManager = (void*) this;
-        result = LSCallOneReply (sh, GETSETTINGS, payload.c_str(), VolumeFromSettingService, ptrOSEMasterVolumeManager, nullptr, &lserror);
+        if (!LSCallOneReply (sh, GETSETTINGS, payload.c_str(), VolumeFromSettingService, ptrOSEMasterVolumeManager, nullptr, &lserror))
+            lserror.Print(__FUNCTION__, __LINE__);
     }
 }
 
@@ -2892,7 +2878,7 @@ bool OSEMasterVolumeManager::VolumeFromSettingService(LSHandle *sh, LSMessage *r
 
 void OSEMasterVolumeManager::handleEvent(events::EVENTS_T *event)
 {
-    switch(event->eventName)
+    switch((int)event->eventName)
     {
         case utils::eEventServerStatusSubscription:
         {
@@ -2906,7 +2892,6 @@ void OSEMasterVolumeManager::handleEvent(events::EVENTS_T *event)
         {
             PM_LOG_INFO(MSGID_CLIENT_MASTER_VOLUME_MANAGER, INIT_KVCOUNT,\
                     "handleEvent:: eEventMasterVolumeStatus");
-            events::EVENT_MASTER_VOLUME_STATUS_T *masterVolumeStatusEvent = (events::EVENT_MASTER_VOLUME_STATUS_T*)event;
             eventMasterVolumeStatus();
         }
         break;

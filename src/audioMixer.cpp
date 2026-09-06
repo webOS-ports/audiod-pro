@@ -139,7 +139,7 @@ void AudioMixer::removeAudioSink(EVirtualAudioSink audioSink, utils::EMIXER_TYPE
         PM_LOG_ERROR(MSGID_AUDIO_MIXER, INIT_KVCOUNT,\
            "AudioMixer:: removeAudioSink invalid mixer type");
     PM_LOG_INFO(MSGID_AUDIO_MIXER, INIT_KVCOUNT,\
-        "AudioMixer:: removeAudioSink active streams:%d pulse streams:%d umi streams:%d",\
+        "AudioMixer:: removeAudioSink active streams:%zu pulse streams:%zu umi streams:%zu",\
         mActiveStreams.size(), mPulseStreams.size(), mUmiStreams.size());
 }
 
@@ -168,7 +168,7 @@ void AudioMixer::addAudioSink(EVirtualAudioSink audioSink, utils::EMIXER_TYPE mi
         PM_LOG_ERROR(MSGID_AUDIO_MIXER, INIT_KVCOUNT,\
            "AudioMixer:: addAudioSink invalid mixer type");
     PM_LOG_INFO(MSGID_AUDIO_MIXER, INIT_KVCOUNT,\
-        "AudioMixer:: addAudioSink active streams:%d pulse streams:%d umi streams:%d",\
+        "AudioMixer:: addAudioSink active streams:%zu pulse streams:%zu umi streams:%zu",\
         mActiveStreams.size(), mPulseStreams.size(), mUmiStreams.size());
 }
 
@@ -208,7 +208,7 @@ void AudioMixer::resetStreamInfo(utils::EMIXER_TYPE mixerType)
        PM_LOG_ERROR(MSGID_AUDIO_MIXER, INIT_KVCOUNT,\
            "AudioMixer:: resetStreamInfo invalid mixer type");
     PM_LOG_INFO(MSGID_AUDIO_MIXER, INIT_KVCOUNT,\
-        "AudioMixer:: resetStreamInfo active streams:%d pulse streams:%d umi streams:%d",\
+        "AudioMixer:: resetStreamInfo active streams:%zu pulse streams:%zu umi streams:%zu",\
         mActiveStreams.size(), mPulseStreams.size(), mUmiStreams.size());
 }
 

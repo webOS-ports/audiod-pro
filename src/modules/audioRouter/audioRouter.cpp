@@ -216,7 +216,7 @@ void AudioRouter::eventSinkPolicyInfo(const pbnjson::JValue& sinkPolicyInfo)
         std::list<EVirtualAudioSink> sinkList;
         utils::SINK_ROUTING_INFO_T outputRoutingInfo;
         mMapSinkRoutingInfo["display1"] = outputRoutingInfo;
-        if (WEBOS_SOC_TYPE == "RPI4") {
+        if (strcmp(WEBOS_SOC_TYPE, "RPI4") == 0) {
             mMapSinkRoutingInfo["display2"] = outputRoutingInfo;
         }
         utils::itMapSinkRoutingInfo it;
@@ -227,7 +227,7 @@ void AudioRouter::eventSinkPolicyInfo(const pbnjson::JValue& sinkPolicyInfo)
             if ((elements["category"].asString(category) == CONV_OK) && \
                 (elements["streamType"].asString(streamType) == CONV_OK))
             {
-                if (WEBOS_SOC_TYPE == "RPI4")
+                if (strcmp(WEBOS_SOC_TYPE, "RPI4") == 0)
                     it = mMapSinkRoutingInfo.find(category);
                 else
                     it = mMapSinkRoutingInfo.find("display1");
@@ -272,7 +272,7 @@ void AudioRouter::eventSourcePolicyInfo(const pbnjson::JValue& sourcePolicyInfo)
         std::list<EVirtualSource> sourceList;
         utils::SOURCE_ROUTING_INFO_T inputRoutingInfo;
         mMapSourceRoutingInfo["display1"] = inputRoutingInfo;
-        if (WEBOS_SOC_TYPE == "RPI4") {
+        if (strcmp(WEBOS_SOC_TYPE, "RPI4") == 0) {
             mMapSourceRoutingInfo["display2"] = inputRoutingInfo;
         }
         utils::itMapSourceRoutingInfo it;
@@ -283,7 +283,7 @@ void AudioRouter::eventSourcePolicyInfo(const pbnjson::JValue& sourcePolicyInfo)
             if ((elements["category"].asString(category) == CONV_OK) && \
                 (elements["streamType"].asString(streamType) == CONV_OK))
             {
-                if (WEBOS_SOC_TYPE == "RPI4")
+                if (strcmp(WEBOS_SOC_TYPE, "RPI4") == 0)
                     it = mMapSourceRoutingInfo.find(category);
                 else
                     it = mMapSourceRoutingInfo.find("display1");            //only one category, since only 1 set of displays are supported
@@ -325,7 +325,6 @@ void AudioRouter::eventResponseSoundDevicesInfo(bool isOutput)
             events::EVENT_RESPONSE_SOUNDOUTPUT_INFO_T eventResponseSoundOutputDeviceInfo;
             eventResponseSoundOutputDeviceInfo.eventName = utils::eEventResponseSoundOutputDeviceInfo;
             eventResponseSoundOutputDeviceInfo.soundOutputInfo = getSoundDeviceInfo(true);
-            for(auto& it:eventResponseSoundOutputDeviceInfo.soundOutputInfo)
             mObjModuleManager->publishModuleEvent((events::EVENTS_T*)&eventResponseSoundOutputDeviceInfo);
         }
         else
@@ -1228,7 +1227,6 @@ bool AudioRouter::setSoundInput(const std::string& soundInput, const int &displa
 //API functions start//
 bool AudioRouter::_getSoundOutput(LSHandle *lshandle, LSMessage *message, void *ctx)
 {
-    bool status = false;
     bool subscribed = false;
     std::string reply;
     int sessionId = -1;
@@ -1513,7 +1511,6 @@ bool AudioRouter::_getSoundInput(LSHandle *lshandle, LSMessage *message, void *c
         PM_LOG_CRITICAL(MSGID_JSON_PARSE_ERROR, INIT_KVCOUNT, "msg.parse failed");
         return true;
     }
-    bool status = false;
     std::string reply = STANDARD_JSON_SUCCESS;
     bool subscribed;
     int displayId;
@@ -1826,7 +1823,7 @@ void AudioRouter::deInitialize()
 
 void AudioRouter::handleEvent(events::EVENTS_T *event)
 {
-    switch(event->eventName)
+    switch((int)event->eventName)
     {
         case utils::eEventSinkStatus:
         {

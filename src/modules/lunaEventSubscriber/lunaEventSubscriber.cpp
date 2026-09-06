@@ -91,7 +91,7 @@ void lunaEventSubscriber::deInitialize()
 
 void lunaEventSubscriber::handleEvent(events::EVENTS_T* event)
 {
-    switch(event->eventName)
+    switch((int)event->eventName)
     {
         case utils::eEventLunaServerStatusSubscription:
         {
@@ -334,7 +334,7 @@ void lunaEventSubscriber::eventSubscribeKey(EModuleEventType event,
 {
     PM_LOG_INFO(MSGID_LUNA_EVENT_SUBSCRIBER,INIT_KVCOUNT,   \
         "call to subscribe to keys EModuleEventType = %d, SERVER_TYPE_E =%d",\
-        event, eServer);
+        (int)event, eServer);
     //Based on the Service connected, We subscribe to the keys.
     mArrayServerOfKey[event] = eServer;
 

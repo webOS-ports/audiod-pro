@@ -34,6 +34,7 @@ const int cMinTimeout = 50;
 const int cMaxTimeout = 5000;
 
 PulseAudioMixer::PulseAudioMixer(MixerInterface* mixerCallBack) : mChannel(0),
+                                     mObjMixerCallBack(mixerCallBack),
                                      mTimeout(cMinTimeout),
                                      mSourceID(-1),
                                      mConnectAttempt(0),
@@ -44,15 +45,14 @@ PulseAudioMixer::PulseAudioMixer(MixerInterface* mixerCallBack) : mChannel(0),
                                      mInputStreamsCurrentlyOpenedCount(0),
                                      mOutputStreamsCurrentlyOpenedCount(0),
                                      voLTE(false),
-                                     NRECvalue(1),
                                      BTDeviceType(eBTDevice_NarrowBand),
                                      mPreviousVolume(0),
+                                     NRECvalue(1),
                                      BTvolumeSupport(false),
                                      mEffectSpeechEnhancementEnabled(false),
                                      mEffectGainControlEnabled(false),
                                      mEffectBeamformingEnabled(false),
-                                     mEffectDynamicRangeCompressorEnabled(false),
-                                     mObjMixerCallBack(mixerCallBack)
+                                     mEffectDynamicRangeCompressorEnabled(false)
 {
     // initialize table for the pulse state lookup table
     PM_LOG_DEBUG("PulseAudioMixer constructor");
@@ -114,7 +114,7 @@ bool PulseAudioMixer::sendDataToPulse (uint32_t msgType, uint32_t msgID, T subOb
         if (bytes != SIZE_MESG_TO_PULSE)
         {
             if (bytes >= 0)
-                PM_LOG_INFO(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT, "sendDataToPulse: only %u bytes sent to Pulse out of %d (%s).", \
+                PM_LOG_INFO(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT, "sendDataToPulse: only %zd bytes sent to Pulse out of %d (%s).", \
                                        bytes, SIZE_MESG_TO_PULSE, strerror(errno));
             else
                 PM_LOG_ERROR(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT, "sendHeaderToPA: send to Pulse failed: %s", strerror(errno));
@@ -285,7 +285,7 @@ bool PulseAudioMixer::sendHeaderToPA(char *data, paudiodMsgHdr audioMsgHdr)
     if (bytes != SIZE_MESG_TO_PULSE)
     {
         if (bytes >= 0)
-            PM_LOG_INFO(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT, "sendHeaderToPA: only %u bytes sent to Pulse out of %d (%s).", \
+            PM_LOG_INFO(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT, "sendHeaderToPA: only %zd bytes sent to Pulse out of %d (%s).", \
                                    bytes, SIZE_MESG_TO_PULSE, strerror(errno));
         else
             PM_LOG_ERROR(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT, "sendHeaderToPA: send to Pulse failed: %s", strerror(errno));
@@ -508,7 +508,6 @@ bool PulseAudioMixer::setAudioEqualizerParam(int preset, int band, int level) {
 }
 
 bool PulseAudioMixer::checkAudioEffectStatus(std::string effectName) {
-    char buffer[SIZE_MESG_TO_PULSE];
     PM_LOG_INFO(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT, "checkAudioEffectStatus: effectId: %s", effectName.c_str());
 
     //  return value
@@ -530,8 +529,6 @@ bool PulseAudioMixer::checkAudioEffectStatus(std::string effectName) {
 
 bool PulseAudioMixer::programLoadBluetooth (const char *address, const char *profile, const int displayID)
 {
-    char cmd = 'l';
-    char buffer[SIZE_MESG_TO_PULSE] ;
     bool ret  = false;
 
     if (!mPulseLink.checkConnection())
@@ -672,21 +669,10 @@ bool PulseAudioMixer::loadInternalSoundCard(char cmd, int cardNumber, int device
         return returnValue;
     }
 
-    switch (isOutput)
-    {
-        case 0:
-        {
-            filename = FILENAME+card_no+"D"+device_no+"c";
-            break;
-        }
-        case 1:
-        {
-            filename = FILENAME+card_no+"D"+device_no+"p";
-            break;
-        }
-        default:
-            return returnValue;
-    }
+    if (isOutput)
+        filename = FILENAME+card_no+"D"+device_no+"p";
+    else
+        filename = FILENAME+card_no+"D"+device_no+"c";
     returnValue = externalSoundcardPathCheck(filename, status);
     if (false == returnValue){
         PM_LOG_INFO (MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT,\
@@ -1056,8 +1042,6 @@ PulseAudioMixer::openCloseSink (EVirtualAudioSink sink, bool openNotClose, int s
         streamCount = 0;
     }
 
-    VirtualSinkSet oldstreamflags = mActiveStreams;
-
     if (0 == streamCount)
         mActiveStreams.remove(sink);
     else
@@ -1112,15 +1096,13 @@ PulseAudioMixer::_pulseStatus(GIOChannel *ch,
         int sockfd = g_io_channel_unix_get_fd (ch);
         ssize_t bytes = recv(sockfd, buffer, SIZE_MESG_TO_AUDIOD, 0);
 
-        char cmd;
-        int isink;
-        int info;
-        char ip[28];
-        int port;
-        char deviceName[SIZE_MESG_TO_AUDIOD];
-        char deviceNameDetail[SIZE_MESG_TO_AUDIOD];
-
         int HdrLen = sizeof(struct paudiodMsgHdr);
+        if (bytes < (ssize_t)HdrLen)
+        {
+            PM_LOG_ERROR(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT,\
+                "_pulseStatus: read %zd bytes from Pulse, expected at least %d", bytes, HdrLen);
+            return;
+        }
         struct paudiodMsgHdr *msgHdr = (struct paudiodMsgHdr*) buffer;
         PM_LOG_INFO(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT,"len = %d message type=%x, message ID=%x",msgHdr->msgLen,msgHdr->msgType, msgHdr->msgID);
 
@@ -1141,7 +1123,7 @@ PulseAudioMixer::_pulseStatus(GIOChannel *ch,
                         int sinkNumber = sndHdr->stream;
                         int info = sndHdr->count;
                         EVirtualAudioSink sink = EVirtualAudioSink(sinkNumber);
-                        PM_LOG_INFO(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT,"PAUDIOD_REPLY_MSGTYPE_SINK_CATEGORY:%d,%d",sink,info);
+                        PM_LOG_INFO(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT,"PAUDIOD_REPLY_MSGTYPE_SINK_CATEGORY:%d,%d",(int)sink,info);
                         if (IsValidVirtualSink(sink) && VERIFY(info >= 0))
                         {
                             PM_LOG_INFO(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT, "%s: pulse says %i sink%s of type %i-%s %s already opened", \
@@ -1182,7 +1164,7 @@ PulseAudioMixer::_pulseStatus(GIOChannel *ch,
                         strncpy(appname, sndHdr->appName, APP_NAME_LENGTH);
                         appname[APP_NAME_LENGTH-1]='\0';
                         EVirtualAudioSink sink = EVirtualAudioSink(sinkNumber);
-                        PM_LOG_INFO(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT,"PAUDIOD_REPLY_MSGTYPE_STREAM_OPEN:%d,%d,%s",sink,sinkIndex,appname);
+                        PM_LOG_INFO(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT,"PAUDIOD_REPLY_MSGTYPE_STREAM_OPEN:%d,%d,%s",(int)sink,sinkIndex,appname);
                         if (VERIFY(IsValidVirtualSink(sink)))
                         {
                             outputStreamOpened (sink , sinkIndex, appname);
@@ -1214,7 +1196,7 @@ PulseAudioMixer::_pulseStatus(GIOChannel *ch,
                         strncpy(appname, sndHdr->appName, APP_NAME_LENGTH);
                         appname[APP_NAME_LENGTH-1]='\0';
                         EVirtualAudioSink sink = EVirtualAudioSink(sinkNumber);
-                        PM_LOG_INFO(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT,"PAUDIOD_REPLY_MSGTYPE_SINK_CLOSE:%d,%d,%s",sink,sinkIndex,appname);
+                        PM_LOG_INFO(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT,"PAUDIOD_REPLY_MSGTYPE_SINK_CLOSE:%d,%d,%s",(int)sink,sinkIndex,appname);
                         if (VERIFY(IsValidVirtualSink(sink)))
                         {
                             outputStreamClosed (sink,sinkIndex,appname);
@@ -1260,9 +1242,11 @@ PulseAudioMixer::_pulseStatus(GIOChannel *ch,
                         char deviceIcon[DEVICE_NAME_LENGTH];
                         char deviceNameDetail[DEVICE_NAME_DETAILS_LENGTH];
 
-                        strncpy(deviceName, sndHdr->device, DEVICE_NAME_LENGTH);
-                        strncpy(deviceNameDetail, sndHdr->deviceNameDetail, DEVICE_NAME_DETAILS_LENGTH);
-                        strncpy(deviceIcon, sndHdr->deviceIcon, DEVICE_NAME_LENGTH);
+                        /* the source fields need not be nul terminated: copy
+                         * them whole and terminate the copies ourselves */
+                        memcpy(deviceName, sndHdr->device, DEVICE_NAME_LENGTH);
+                        memcpy(deviceNameDetail, sndHdr->deviceNameDetail, DEVICE_NAME_DETAILS_LENGTH);
+                        memcpy(deviceIcon, sndHdr->deviceIcon, DEVICE_NAME_LENGTH);
                         deviceName[DEVICE_NAME_LENGTH-1]='\0';
                         deviceNameDetail[DEVICE_NAME_DETAILS_LENGTH-1]='\0';
                         deviceIcon[DEVICE_NAME_LENGTH-1]='\0';
@@ -1497,7 +1481,7 @@ bool PulseAudioMixer::closeClient(int sinkIndex)
     paramSet.param2 = 0;
     paramSet.param3 = 0;
 
-    int status = sendDataToPulse<paParamSet>(PAUDIOD_MSGTYPE_SETPARAM, eclose_playback_by_sink_input_reply, paramSet);
+    ret = sendDataToPulse<paParamSet>(PAUDIOD_MSGTYPE_SETPARAM, eclose_playback_by_sink_input_reply, paramSet);
 
     return ret;
 }

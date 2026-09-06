@@ -50,8 +50,6 @@ void AudioPolicyManager::eventSinkStatus(const std::string& source, const std::s
         std::string streamType = getStreamType(audioSink);
         std::string payload = "";
         int priority = 0;
-        int currentVolume = 100;
-        bool ramp = false;
         for (auto &elements : mVolumePolicyInfo)
         {
             if (elements.streamType == streamType)
@@ -60,8 +58,6 @@ void AudioPolicyManager::eventSinkStatus(const std::string& source, const std::s
                 elements.sink = sink;
                 elements.mixerType = mixerType;
                 priority = elements.priority;
-                currentVolume = elements.currentVolume;
-                ramp = elements.ramp;
                 elements.isStreamActive = (sinkStatus == utils::eSinkOpened) ? true : false;
                 PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT,\
                     "mixertype set %d",elements.mixerType);
@@ -200,7 +196,7 @@ void AudioPolicyManager::addSinkInput(const std::string &trackId, const int &sin
         for(auto &elements:it->second)
         {
             PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT,\
-                "audio sink : %d,%d,%s",elements.audioSink, getSinkType(sink),sink.c_str());
+                "audio sink : %d,%d,%s",(int)elements.audioSink, (int)getSinkType(sink),sink.c_str());
             if (elements.audioSink == getSinkType(sink))
             {
                 PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT,\
@@ -862,7 +858,7 @@ bool AudioPolicyManager::storeTrackVolume(const std::string &trackId, const int 
         return false;
     }
     printTrackVolumeInfo();
-    return true;
+    return status;
 }
 
 void AudioPolicyManager::printTrackVolumeInfo()
@@ -1634,7 +1630,6 @@ bool AudioPolicyManager::_setTrackVolume(LSHandle *lshandle, LSMessage *message,
     {
         bool status = false;
         bool isValidVolume = false;
-        bool isStreamActive = false;
         bool isUnregisterdTrackId = false;
         int volume = 0;
         std::string streamType;
@@ -3039,7 +3034,7 @@ void AudioPolicyManager::deInitialize()
 
 void AudioPolicyManager::handleEvent(events::EVENTS_T *event)
 {
-    switch(event->eventName)
+    switch((int)event->eventName)
     {
         case utils::eEventSinkStatus:
         {
