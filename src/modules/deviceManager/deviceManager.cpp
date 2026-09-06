@@ -556,12 +556,12 @@ void DeviceManager::addEventToQueue(bool isAdd, const Device& device)
     {
         PM_LOG_INFO(MSGID_DEVICE_MANAGER, INIT_KVCOUNT,"mDeviceAddedQueue");
         mDeviceAddedQueue.push_back(device);
-        PM_LOG_INFO(MSGID_DEVICE_MANAGER, INIT_KVCOUNT,"mDeviceAddedQueue %d",mDeviceAddedQueue.size());
+        PM_LOG_INFO(MSGID_DEVICE_MANAGER, INIT_KVCOUNT,"mDeviceAddedQueue %zu",mDeviceAddedQueue.size());
     }
     else
     {
         mDeviceRemovedQueue.push_back(device);
-        PM_LOG_INFO(MSGID_DEVICE_MANAGER, INIT_KVCOUNT,"mDeviceRemovedQueue %d",mDeviceRemovedQueue.size());
+        PM_LOG_INFO(MSGID_DEVICE_MANAGER, INIT_KVCOUNT,"mDeviceRemovedQueue %zu",mDeviceRemovedQueue.size());
     }
 }
 
@@ -944,7 +944,7 @@ void DeviceManager::getAttachedNonStorageDeviceList(LSMessage *message)
         return;
     }
     int newDeviceList = audioDeviceList.arraySize();
-    PM_LOG_DEBUG("%s: newDeviceList size: %zu ",__FUNCTION__,newDeviceList);
+    PM_LOG_DEBUG("%s: newDeviceList size: %d ",__FUNCTION__,newDeviceList);
     PM_LOG_DEBUG("%s: mDeviceList size: %d",__FUNCTION__,mDeviceList);
 
     if(newDeviceList > mDeviceList)
@@ -981,7 +981,7 @@ void DeviceManager::getAttachedNonStorageDeviceList(LSMessage *message)
                 PM_LOG_ERROR(MSGID_DEVICE_MANAGER, INIT_KVCOUNT, "Unable to find builtin parameter");
             }
             if(!audioDeviceObject["subDeviceList"].isArray()){
-                PM_LOG_ERROR(MSGID_DEVICE_MANAGER, INIT_KVCOUNT,"subDeviceList of card :%s is not an array",cardName);
+                PM_LOG_ERROR(MSGID_DEVICE_MANAGER, INIT_KVCOUNT,"subDeviceList of card :%s is not an array",cardName.c_str());
                 return;
             }
             pbnjson::JValue subDeviceList = audioDeviceObject["subDeviceList"];

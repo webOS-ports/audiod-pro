@@ -112,7 +112,7 @@ bool ModuleManager::createModules()
             else
             {
                 PM_LOG_ERROR(MSGID_MODULE_MANAGER, INIT_KVCOUNT,\
-                    "ModuleManager: handle is nullptr for module: %s", *itr);
+                    "ModuleManager: handle is nullptr for module: %s", itr->c_str());
             }
         }
     }
@@ -160,7 +160,7 @@ void ModuleManager::subscribeModuleEvent(ModuleInterface* module, EModuleEventTy
 void ModuleManager::subscribeKeyInfo(ModuleInterface* module, EModuleEventType event, SERVER_TYPE_E eService, const std::string& key, const std::string& payload)
 {
     PM_LOG_INFO(MSGID_MODULE_MANAGER, INIT_KVCOUNT, \
-        "subscribeKeyInfo called %d:%d", event, eService );
+        "subscribeKeyInfo called %d:%d", (int)event, eService );
     bool success = true;
     if (!(eService >= eServiceFirst && eService < eServiceCount))
     {
