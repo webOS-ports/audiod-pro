@@ -3039,7 +3039,7 @@ void AudioPolicyManager::deInitialize()
 
 void AudioPolicyManager::handleEvent(events::EVENTS_T *event)
 {
-    switch(event->eventName)
+    switch((int)event->eventName)
     {
         case utils::eEventSinkStatus:
         {

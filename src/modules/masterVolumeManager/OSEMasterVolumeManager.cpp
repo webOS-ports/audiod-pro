@@ -2892,7 +2892,7 @@ bool OSEMasterVolumeManager::VolumeFromSettingService(LSHandle *sh, LSMessage *r
 
 void OSEMasterVolumeManager::handleEvent(events::EVENTS_T *event)
 {
-    switch(event->eventName)
+    switch((int)event->eventName)
     {
         case utils::eEventServerStatusSubscription:
         {

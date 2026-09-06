@@ -532,7 +532,7 @@ void PalmLegacyManager::handleEvent(events::EVENTS_T* ev)
     if (!ev)
         return;
 
-    switch (ev->eventName)
+    switch ((int)ev->eventName)
     {
         case utils::eEventActiveDeviceInfo:
         {

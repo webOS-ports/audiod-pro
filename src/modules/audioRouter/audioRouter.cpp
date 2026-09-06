@@ -1826,7 +1826,7 @@ void AudioRouter::deInitialize()
 
 void AudioRouter::handleEvent(events::EVENTS_T *event)
 {
-    switch(event->eventName)
+    switch((int)event->eventName)
     {
         case utils::eEventSinkStatus:
         {

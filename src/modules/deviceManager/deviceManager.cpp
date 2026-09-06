@@ -1149,7 +1149,7 @@ void DeviceManager::deInitialize()
 
 void DeviceManager::handleEvent(events::EVENTS_T* ev)
 {
-    switch(ev->eventName)
+    switch((int)ev->eventName)
     {
         case utils::eEventMixerStatus:
         {

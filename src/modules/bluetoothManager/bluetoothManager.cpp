@@ -700,7 +700,7 @@ void BluetoothManager::deInitialize()
 
 void BluetoothManager::handleEvent(events::EVENTS_T* event)
 {
-    switch(event->eventName)
+    switch((int)event->eventName)
     {
         case utils::eEventServerStatusSubscription:
         {

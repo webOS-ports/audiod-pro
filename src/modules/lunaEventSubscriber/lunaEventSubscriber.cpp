@@ -91,7 +91,7 @@ void lunaEventSubscriber::deInitialize()
 
 void lunaEventSubscriber::handleEvent(events::EVENTS_T* event)
 {
-    switch(event->eventName)
+    switch((int)event->eventName)
     {
         case utils::eEventLunaServerStatusSubscription:
         {

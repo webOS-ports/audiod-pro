@@ -487,7 +487,7 @@ bool AudioEffectManager::_setAudioEqualizerPreset(LSHandle *lshandle, LSMessage 
 
 void AudioEffectManager::handleEvent(events::EVENTS_T *event)
 {
-    switch(event->eventName)
+    switch((int)event->eventName)
     {
         case  utils::eEventDeviceConnectionStatus:
         {
