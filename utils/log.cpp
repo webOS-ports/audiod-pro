@@ -25,22 +25,6 @@
 #include <map>
 
 
-class GStaticMutexLocker {
-public:
-    GStaticMutexLocker(GStaticMutex & mutex) : mMutex(mutex)
-    {
-        g_static_mutex_lock(&mMutex);
-    }
-
-    ~GStaticMutexLocker()
-    {
-        g_static_mutex_unlock(&mMutex);
-    }
-
-private:
-    GStaticMutex &    mMutex;
-};
-
 static GLogLevelFlags    sLogLevel = G_LOG_LEVEL_MESSAGE;
 static ELogDestination    sLogDestination = eLogDestination_SystemLog;
 static const char *        sProcessName = "unnamed";
@@ -94,6 +78,24 @@ static const char * logLevelName(GLogLevelFlags logLevel)
     return name;
 }
 
+/// write to the private log file, finishing short writes and retrying
+/// interruptions; on a real error there is nowhere left to report to
+static void writeLogFile(int fd, const char * data, size_t len)
+{
+    while (len > 0)
+    {
+        ssize_t written = ::write(fd, data, len);
+        if (written < 0)
+        {
+            if (errno == EINTR)
+                continue;
+            break;
+        }
+        data += written;
+        len -= (size_t)written;
+    }
+}
+
 void logFilter(const gchar *log_domain, GLogLevelFlags log_level, const gchar *message, gpointer unused_data)
 {
     if (log_level > sLogLevel || sLogDestination == eLogDestination_None || message == 0 || *message == 0)
@@ -124,6 +126,12 @@ void logFilter(const gchar *log_domain, GLogLevelFlags log_level, const gchar *m
                 priority = kPmLogLevel_Info;
                 break;
         }
+        /* forward the message to the system log; debug level must not carry
+         * a msgid, every other level must */
+        if (priority == kPmLogLevel_Debug)
+            PmLogString(gLogContext, kPmLogLevel_Debug, NULL, NULL, message);
+        else
+            PmLogString(gLogContext, (PmLogLevel)priority, "AUDIOD_GLOG", NULL, message);
     }
 
     if (sLogDestination & (eLogDestination_PrivateLogFiles | eLogDestination_Terminal))
@@ -153,7 +161,7 @@ void logFilter(const gchar *log_domain, GLogLevelFlags log_level, const gchar *m
             {
                 if (sLogFile > 0)
                 {
-                    ::write(sLogFile, startTime, ::strlen(startTime));
+                    writeLogFile(sLogFile, startTime, ::strlen(startTime));
                     std::string    msg;
                     msg = string_printf("Logging to private log file '%s' at %s", baseName.c_str(), startTime);
                 }
@@ -189,19 +197,19 @@ void logFilter(const gchar *log_domain, GLogLevelFlags log_level, const gchar *m
             timeStamp[len] = 0;
         }
         if (sLogFile > 0)
-            ::write(sLogFile, timeStamp, len);
+            writeLogFile(sLogFile, timeStamp, len);
         len = ::strlen(indent);
         if (len > 0 && sLogFile > 0)
-            ::write(sLogFile, indent, len);
+            writeLogFile(sLogFile, indent, len);
         len = ::strlen(message);
         if (sLogFile > 0)
-            ::write(sLogFile, message, len);
+            writeLogFile(sLogFile, message, len);
         bool    needLF = false;
         if (len < 1 || message[len - 1] != '\n')
         {
             needLF = true;
             if (sLogFile > 0)
-                ::write(sLogFile, "\n", 1);
+                writeLogFile(sLogFile, "\n", 1);
         }
         if (sLogDestination & eLogDestination_Terminal)
         {
