@@ -324,7 +324,6 @@ bool PulseAudioLink::play(const char * samplename, const char * sink, const char
     PMTRACE_FUNCTION;
     std::string sample = samplename;
     std::size_t found = sample.find_last_of("/");
-    sample.substr(0,found);
     std::string filename = sample.substr(found+1);
     found = filename.find_last_of(".");
     std::string preloadName = filename.substr(0, found);
@@ -439,6 +438,9 @@ void PulseAudioLink::PlayAudioDataProviderDeferCB(pa_mainloop_api *a,
                                                   datacb->dataProvider->getVolume()
                                                   ),
                                   NULL);
+    if (r < 0)
+        PM_LOG_ERROR(MSGID_PULSE_LINK, INIT_KVCOUNT,\
+            "PlayAudioDataProviderDeferCB: pa_stream_connect_playback failed");
 exit:
     free(datacb);
     a->defer_free(e);
@@ -635,7 +637,7 @@ static void preloadDeferCB(pa_mainloop_api *a, pa_defer_event *e, void *userdata
     struct PreloadDeferCBData* cbdata = (struct PreloadDeferCBData*)userdata;
     bool unref= false;
     cbdata->lock();
-    PM_LOG_DEBUG("PulseAudioLink::preload: Pre-loading '%s', %u bytes.",\
+    PM_LOG_DEBUG("PulseAudioLink::preload: Pre-loading '%s', %zu bytes.",\
         cbdata->snd.samplename,\
         cbdata->snd.length);
     cbdata->s = pa_stream_new(cbdata->context,
@@ -816,7 +818,7 @@ void* PulseAudioLink::pathread_func(void* p) {
             "pa_mainloop_run() failed");
     }
     PM_LOG_DEBUG("pathread_func() exit %d", ret);
-    return (void*)ret;
+    return (void*)(intptr_t)ret;
 }
 
 #define DTMF_SAMPLE_RATE 44100
