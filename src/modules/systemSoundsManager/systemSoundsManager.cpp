@@ -96,7 +96,7 @@ bool SystemSoundsManager::_playFeedback(LSHandle *lshandle, LSMessage *message, 
         PM_LOG_ERROR(MSGID_SYSTEMSOUND_MANAGER, INIT_KVCOUNT,"snprintf failed to generate filename. Returning from here\n");
         goto error;
     }
-    else if (snprintf(filename, size, SYSTEMSOUNDS_PATH "%s-ondemand.pcm", name.c_str()) >= size)
+    else if ((size_t)snprintf(filename, size, SYSTEMSOUNDS_PATH "%s-ondemand.pcm", name.c_str()) >= size)
     {
         PM_LOG_ERROR(MSGID_SYSTEMSOUND_MANAGER, INIT_KVCOUNT,"snprintf buffer overflow. Filename might be truncated\n");
     }
@@ -109,7 +109,7 @@ bool SystemSoundsManager::_playFeedback(LSHandle *lshandle, LSMessage *message, 
          * no -ondemand suffix, including the AdjustVolume one the volume keys use,
          * and rejecting those here is what made the keys silent.
          */
-        if (snprintf(filename, size, SYSTEMSOUNDS_PATH "%s.pcm", name.c_str()) < size)
+        if ((size_t)snprintf(filename, size, SYSTEMSOUNDS_PATH "%s.pcm", name.c_str()) < size)
             fp = fopen(filename, "r");
     }
     free(filename);

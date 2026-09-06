@@ -264,7 +264,6 @@ bool AudioEffectManager::_getAudioEffectsStatus(LSHandle *lshandle, LSMessage *m
 
     std::string reply ;
     CLSError lserror;
-    bool returnValue = true;
     bool subscribed = false;
     msg.get("subscribe", subscribed);
 

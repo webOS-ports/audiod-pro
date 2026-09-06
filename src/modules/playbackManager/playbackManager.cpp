@@ -116,7 +116,7 @@ void PlaybackManager::notifyGetPlayabackStatus(std::string& playbackId, std::str
             if(retValAcquire)
             {
               while(LSSubscriptionHasNext(iter)){
-                    LSMessage *subscribeMessage = LSSubscriptionNext(iter);
+                    LSSubscriptionNext(iter);
                     LSSubscriptionRemove(iter);
                     break;
 
