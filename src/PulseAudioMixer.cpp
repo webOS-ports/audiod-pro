@@ -77,7 +77,7 @@ PulseAudioMixer::~PulseAudioMixer()
     PM_LOG_DEBUG("PulseAudioMixer destructor");
 }
 
-paudiodMsgHdr PulseAudioMixer::addAudioMsgHeader(uint8_t msgType, uint8_t msgID)
+paudiodMsgHdr PulseAudioMixer::addAudioMsgHeader(uint32_t msgType, uint32_t msgID)
 {
     struct paudiodMsgHdr audioMsgHdr;
     audioMsgHdr.msgType = msgType;
@@ -393,7 +393,7 @@ bool PulseAudioMixer::setSoundOutputOnRange(EVirtualAudioSink startSink,\
     strncpy(routingSet.device, deviceName, DEVICE_NAME_LENGTH);
     routingSet.device[DEVICE_NAME_LENGTH-1] = '\0';
 
-    bool status = sendDataToPulse<paRoutingSet>(PAUDIOD_REPLY_MSGTYPE_ROUTING, eset_sink_outputdevice_on_range_reply, routingSet);
+    bool status = sendDataToPulse<paRoutingSet>(PAUDIOD_MSGTYPE_ROUTING, eset_sink_outputdevice_on_range_reply, routingSet);
 
     return status;
 }
@@ -409,7 +409,7 @@ bool PulseAudioMixer::setSoundInputOnRange(EVirtualSource startSource,\
     strncpy(routingSet.device, deviceName, DEVICE_NAME_LENGTH);
     routingSet.device[DEVICE_NAME_LENGTH-1] = '\0';
 
-    bool status = sendDataToPulse<paRoutingSet>(PAUDIOD_REPLY_MSGTYPE_ROUTING, eset_source_inputdevice_on_range_reply, routingSet);
+    bool status = sendDataToPulse<paRoutingSet>(PAUDIOD_MSGTYPE_ROUTING, eset_source_inputdevice_on_range_reply, routingSet);
 
     return status;
 }
@@ -423,7 +423,7 @@ bool PulseAudioMixer::setDefaultSinkRouting(EVirtualAudioSink startSink, EVirtua
     routingSet.id = 0;
     routingSet.device[DEVICE_NAME_LENGTH-1] = {'\0'};
 
-    bool status = sendDataToPulse<paRoutingSet>(PAUDIOD_REPLY_MSGTYPE_ROUTING, eset_default_sink_routing_reply, routingSet);
+    bool status = sendDataToPulse<paRoutingSet>(PAUDIOD_MSGTYPE_ROUTING, eset_default_sink_routing_reply, routingSet);
 
     return status;
 }
@@ -437,7 +437,7 @@ bool PulseAudioMixer::setDefaultSourceRouting(EVirtualSource startSource, EVirtu
     routingSet.id = 0;
     routingSet.device[DEVICE_NAME_LENGTH-1] = {'\0'};
 
-    bool status = sendDataToPulse<paRoutingSet>(PAUDIOD_REPLY_MSGTYPE_ROUTING, eset_default_source_routing_reply, routingSet);
+    bool status = sendDataToPulse<paRoutingSet>(PAUDIOD_MSGTYPE_ROUTING, eset_default_source_routing_reply, routingSet);
 
     return status;
 }

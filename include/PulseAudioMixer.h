@@ -39,7 +39,7 @@ public:
     ~PulseAudioMixer();
 
     //To add audio header details to be sent to pulseaudio
-    paudiodMsgHdr addAudioMsgHeader(uint8_t msgType, uint8_t msgID);
+    paudiodMsgHdr addAudioMsgHeader(uint32_t msgType, uint32_t msgID);
 
     //Will ignore volume of high latency sinks not playing and mute them.
     bool programTrackVolume(EVirtualAudioSink sink, int sinkIndex, int volume, LSHandle *lshandle, LSMessage *message, void *ctx, PulseCallBackFunc cb, bool ramp = false);
