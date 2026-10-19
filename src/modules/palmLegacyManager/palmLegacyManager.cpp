@@ -1735,8 +1735,17 @@ bool PalmLegacyManager::_setCallMode(LSHandle *sh, LSMessage *message, void *ctx
         LegacyCategory *phone = categoryByName("/phone");
         bool inCall = (self->mCallMode != eCallMode_None);
         bool speakerMode = phone && phone->route == ePhoneRoute_Speaker;
-        msg.get("inCall", inCall);
-        msg.get("speakerMode", speakerMode);
+
+        /* Only what the caller actually sent: {"speakerMode":true} on its own
+         * is the speaker button mid-call and must leave the call up. Not
+         * msg.get() unguarded - pbnjson's asBool() writes false into the
+         * target for a missing key, so the call ended on every speaker
+         * toggle. */
+        pbnjson::JValue payload = msg.get();
+        if (payload["inCall"].isBoolean())
+            inCall = payload["inCall"].asBool();
+        if (payload["speakerMode"].isBoolean())
+            speakerMode = payload["speakerMode"].asBool();
 
         if (phone)
             phone->route = speakerMode ? ePhoneRoute_Speaker : ePhoneRoute_Earpiece;
