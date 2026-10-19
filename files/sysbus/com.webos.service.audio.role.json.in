@@ -15,6 +15,7 @@
                 "com.webos.service.audio",
                 "com.webos.service.audiooutput",
                 "com.webos.service.bluetooth2",
+                "com.webos.service.mediacontroller",
                 "com.webos.service.pdm",
                 "com.webos.service.settings",
                 "com.webos.settingsservice",
