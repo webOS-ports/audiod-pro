@@ -106,7 +106,11 @@ bool LSMessageJsonParser::parse(const char * callerFunction,
                  callerFunction, context,
                  payload, sender, mSchemaText);
         }
-        if (sender)
+        /* Only with the handle the message came in on: without it
+         * luna-service2 refuses the reply ("replying to message on
+         * different bus"), and a reply from a service is not a call to
+         * reply to at all. */
+        if (lssender)
         {
             std::string reply = createJsonReplyString(false, 1, errorText);
             CLSError lserror;
