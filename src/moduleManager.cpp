@@ -154,6 +154,20 @@ void ModuleManager::subscribeModuleEvent(ModuleInterface* module, EModuleEventTy
 {
     PM_LOG_INFO(MSGID_MODULE_MANAGER, INIT_KVCOUNT,\
         "subscribeModuleEvent for eventype:%d", (int)eventType);
+    addSubscriber(eventType, module);
+}
+
+/* A module is listed once for an event however often it subscribes to it:
+ * subscribing to a key again - as BluetoothManager does when bluetooth2
+ * comes back - must not have every later event handled twice. */
+void ModuleManager::addSubscriber(EModuleEventType eventType, ModuleInterface* module)
+{
+    auto range = mapEventsSubscribers.equal_range(eventType);
+    for (auto it = range.first; it != range.second; ++it)
+    {
+        if (it->second == module)
+            return;
+    }
     mapEventsSubscribers.insert(std::pair<EModuleEventType, ModuleInterface*>(eventType, module));
 }
 
@@ -174,7 +188,7 @@ void ModuleManager::subscribeKeyInfo(ModuleInterface* module, EModuleEventType e
     }
     if (success)
     {
-        mapEventsSubscribers.insert(std::pair<EModuleEventType, ModuleInterface*>(event, module));
+        addSubscriber(event, module);
         //if payload is required from Module during runtime
         events::EVENT_SUBSCRIBE_KEY_T eventSubscribeKey;
         eventSubscribeKey.eventName = utils::eEventLunaKeySubscription;
@@ -196,7 +210,7 @@ void ModuleManager::subscribeServerStatusInfo(ModuleInterface* module, SERVER_TY
     }
     else
     {
-        mapEventsSubscribers.insert(std::pair<EModuleEventType, ModuleInterface*>(utils::eEventServerStatusSubscription, module));
+        addSubscriber(utils::eEventServerStatusSubscription, module);
     }
     events::EVENT_SUBSCRIBE_SERVER_STATUS_T eventSubscribeServerStatus;
     eventSubscribeServerStatus.eventName = utils::eEventLunaServerStatusSubscription;
