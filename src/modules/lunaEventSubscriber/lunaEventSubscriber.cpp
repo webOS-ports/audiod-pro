@@ -211,12 +211,17 @@ void lunaEventSubscriber::subscribeToKeys(LSHandle *handle, EModuleEventType eEv
                     continue;
             }
             if (it == eLunaEventBTDeviceStatus ||
-                it == eLunaEventA2DPStatus)
+                it == eLunaEventA2DPStatus ||
+                it == eEventBTDeviceStatus ||
+                it == eEventA2DPDeviceStatus ||
+                it == eEventA2DPSourceStatus)
             {
                 PM_LOG_INFO(MSGID_LUNA_EVENT_SUBSCRIBER,INIT_KVCOUNT,   \
                     "Dynamic subscription");
                 //Since BT has dynamic payload,
-                //Let it subscribe from BT manager module itself
+                //Let it subscribe from BT manager module itself: it makes
+                //them again from the adapter report that follows. Made
+                //here too, each would be open twice and answer twice.
                 continue;
             }
             SERVER_TYPE_E server = mLunaEventSubscriber->mArrayServerOfKey[it];

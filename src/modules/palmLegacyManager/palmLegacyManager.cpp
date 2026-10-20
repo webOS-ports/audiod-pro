@@ -29,6 +29,10 @@
 #define MASTER_GET_VOLUME       "luna://com.webos.service.audio/master/getVolume"
 #define MASTER_URI_PREFIX       "luna://com.webos.service.audio/master/"
 
+#define MEDIA_SESSIONS_URI      "luna://com.webos.service.mediacontroller/getActiveMediaSessions"
+#define MEDIA_PLAY_STATUS_URI   "luna://com.webos.service.mediacontroller/getMediaPlayStatus"
+#define MEDIA_KEY_URI           "luna://com.webos.service.mediacontroller/injectMediaKeyEvent"
+
 /* Subscription keys. LSSubscriptionReply matches on an opaque string, so these
  * only have to agree with what the corresponding handler passes to
  * LSSubscriptionProcess -- which is "<category>/<method>". */
@@ -81,6 +85,12 @@ PalmLegacyManager::PalmLegacyManager(ModuleConfig* const pConfObj) :
     mActiveSoundOutput(""),
     mMasterVolume(0),
     mMasterMuted(false),
+    mJackState(eJack_Unknown),
+    mJackSeenUnplugged(false),
+    mBtAudioSink(""),
+    mBtAudioName(""),
+    mResumeMediaAfterCall(false),
+    mMediaGeneration(0),
     mPaMainloop(nullptr),
     mPaContext(nullptr),
     mPaReady(false)
@@ -543,6 +553,7 @@ void PalmLegacyManager::handleEvent(events::EVENTS_T* ev)
                 PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
                     "Active sound output is now %s", info->deviceName.c_str());
                 mActiveSoundOutput = info->deviceName;
+                setActiveOutput(info->deviceName);
             }
         }
         break;
@@ -717,10 +728,29 @@ void PalmLegacyManager::paContextStateCb(pa_context *c, void *userdata)
              * real output port (speaker/earpiece); it is idempotent, so it is a
              * no-op when the hardware is already correct. This also re-pushes an
              * in-progress call's routing if PulseAudio came up mid-call. */
+            if (self->applyCallRouting(self->mCallMode, self->effectiveRoute()))
             {
-                LegacyCategory *phone = categoryByName("/phone");
-                self->applyCallRouting(self->mCallMode,
-                                       phone ? phone->route : ePhoneRoute_Earpiece);
+                self->mAppliedCallMode = self->mCallMode;
+                self->mAppliedRoute = self->effectiveRoute();
+            }
+
+            /* Follow the jack from here on. Port availability changes arrive
+             * as sink and source change events; the initial walk picks up
+             * whatever is plugged in already, including at boot. */
+            pa_context_set_subscribe_callback(c, &PalmLegacyManager::paSubscribeCb, self);
+            {
+                pa_operation *op = pa_context_subscribe(c, PA_SUBSCRIPTION_MASK_SINK,
+                                                        nullptr, nullptr);
+                if (op)
+                    pa_operation_unref(op);
+                else
+                    PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+                        "Could not subscribe to PulseAudio sink events; headphones "
+                        "will not be followed");
+
+                op = pa_context_get_sink_info_list(c, &PalmLegacyManager::paJackSinkCb, self);
+                if (op)
+                    pa_operation_unref(op);
             }
             break;
         case PA_CONTEXT_FAILED:
@@ -891,7 +921,8 @@ void PalmLegacyManager::paSinkInfoCb(pa_context *c, const pa_sink_info *info, in
     if (!info)
         return;
 
-    pa_sink_port_info *earpiece = nullptr, *speaker = nullptr, *headphones = nullptr;
+    pa_sink_port_info *earpiece = nullptr, *speaker = nullptr;
+    pa_sink_port_info *wiredHeadset = nullptr, *wiredHeadphone = nullptr;
     pa_sink_port_info *highest = nullptr, *preferred = nullptr;
 
     for (uint32_t i = 0; i < info->n_ports; i++)
@@ -907,32 +938,48 @@ void PalmLegacyManager::paSinkInfoCb(pa_context *c, const pa_sink_info *info, in
             earpiece = p;
         else if (!strcmp(p->name, "output-speaker"))
             speaker = p;
-        else if ((!strcmp(p->name, "output-wired_headset") ||
-                  !strcmp(p->name, "output-wired_headphone")) &&
-                 p->available != PA_PORT_AVAILABLE_NO)
-            headphones = p;
+        else if (!strcmp(p->name, "output-wired_headset") && p->available != PA_PORT_AVAILABLE_NO)
+            wiredHeadset = p;
+        else if (!strcmp(p->name, "output-wired_headphone") && p->available != PA_PORT_AVAILABLE_NO)
+            wiredHeadphone = p;
     }
 
-    /* An earpiece is what identifies the handset's own sink; anything without
-     * one is some other output (HDMI, USB, a loopback) and is left alone. */
-    if (!earpiece)
+    /* An earpiece or a loudspeaker is what identifies the device's own sink;
+     * anything with neither is some other output (HDMI, USB, a loopback) and
+     * is left alone. Tablets have no earpiece, so it cannot be the earpiece
+     * alone or their headphone jack is never switched to. */
+    if (!earpiece && !speaker)
         return;
 
-    /* The route is the only trustworthy plug signal here: droid cards report
-     * every port as available (no jack detection at the PulseAudio level), so
-     * "headphone port available" must never override an earpiece route or the
-     * whole call goes out an unplugged jack. */
-    if (req->mode != eCallMode_None)
+    /* The route decides, not port availability by itself: on a device without
+     * jack detection every port claims to be available, and an earpiece call
+     * must not go out an empty jack. effectiveRoute() only asks for the jack
+     * once detection has shown something is in it. */
+    switch (req->route)
     {
-        switch (req->route)
+        case ePhoneRoute_Headset:
+        case ePhoneRoute_HeadsetMic:
         {
-            case ePhoneRoute_Speaker:       preferred = speaker; break;
-            case ePhoneRoute_Headset:
-            case ePhoneRoute_HeadsetMic:    preferred = headphones ? headphones : earpiece; break;
-            case ePhoneRoute_BluetoothSCO:  preferred = nullptr; break;  /* handled by the BT card */
-            case ePhoneRoute_Earpiece:
-            default:                        preferred = earpiece; break;
+            /* With detection the two wired ports are exclusive -- the one
+             * that is available says whether the plug has a microphone. */
+            pa_sink_port_info *wired = (req->route == ePhoneRoute_HeadsetMic)
+                                     ? (wiredHeadset ? wiredHeadset : wiredHeadphone)
+                                     : (wiredHeadphone ? wiredHeadphone : wiredHeadset);
+            preferred = wired ? wired : (req->mode != eCallMode_None ? earpiece : nullptr);
+            break;
         }
+        case ePhoneRoute_Speaker:
+            /* Outside a call the loudspeaker is just the highest-priority
+             * available port, as it always was. */
+            preferred = (req->mode != eCallMode_None) ? speaker : nullptr;
+            break;
+        case ePhoneRoute_BluetoothSCO:
+            preferred = nullptr;    /* handled by the BT card */
+            break;
+        case ePhoneRoute_Earpiece:
+        default:
+            preferred = (req->mode != eCallMode_None) ? earpiece : nullptr;
+            break;
     }
 
     if (!preferred)
@@ -992,8 +1039,9 @@ void PalmLegacyManager::paSourceInfoCb(pa_context *c, const pa_source_info *info
     if (!builtinMic)
         return;     /* Not the handset's own capture source. */
 
-    /* Same as the sink walk: droid ports always claim to be available, so the
-     * headset mic is only used when the route says one is plugged in. */
+    /* Same as the sink walk: without jack detection every port claims to be
+     * available, so the headset mic is only used when the route says one is
+     * plugged in. */
     if (req->route == ePhoneRoute_HeadsetMic)
         preferred = headsetMic ? headsetMic : builtinMic;
     else
@@ -1028,10 +1076,366 @@ void PalmLegacyManager::paSourcePortSetCb(pa_context *c, int success, void *user
         PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT, "Failed to set the source port");
 }
 
+/* ------------------------------------------------------------------------- *
+ * Headphones and Bluetooth audio
+ * ------------------------------------------------------------------------- */
+
+void PalmLegacyManager::paSubscribeCb(pa_context *c, pa_subscription_event_type_t t,
+                                      uint32_t idx, void *userdata)
+{
+    if ((t & PA_SUBSCRIPTION_EVENT_FACILITY_MASK) != PA_SUBSCRIPTION_EVENT_SINK)
+        return;
+
+    const unsigned int type = t & PA_SUBSCRIPTION_EVENT_TYPE_MASK;
+    if (type != PA_SUBSCRIPTION_EVENT_CHANGE && type != PA_SUBSCRIPTION_EVENT_NEW)
+        return;
+
+    /* A port availability change is a sink change like any other (volume,
+     * active port), so look and let paJackSinkCb decide whether it matters. */
+    pa_operation *op = pa_context_get_sink_info_by_index(c, idx, &PalmLegacyManager::paJackSinkCb,
+                                                         userdata);
+    if (op)
+        pa_operation_unref(op);
+}
+
+void PalmLegacyManager::paJackSinkCb(pa_context *c, const pa_sink_info *info, int eol, void *userdata)
+{
+    PalmLegacyManager *self = static_cast<PalmLegacyManager*>(userdata);
+    if (!self || eol || !info)
+        return;
+
+    const pa_sink_port_info *headset = nullptr, *headphone = nullptr;
+
+    for (uint32_t i = 0; i < info->n_ports; i++)
+    {
+        const pa_sink_port_info *p = info->ports[i];
+        if (!p)
+            continue;
+        if (!strcmp(p->name, "output-wired_headset"))
+            headset = p;
+        else if (!strcmp(p->name, "output-wired_headphone"))
+            headphone = p;
+    }
+
+    if (!headset && !headphone)
+        return;     /* Not the sink the jack belongs to. */
+
+    EJackState state;
+
+    if (headset && headphone)
+    {
+        /* droid-card's jack detection, evdev and extcon alike, marks at most
+         * one of the two available: the headset port for a plug with a
+         * microphone, the headphone port for one without, neither when the
+         * jack is empty. A card without detection leaves every port at its
+         * default, available -- so both available means "cannot tell". */
+        const bool hs = (headset->available == PA_PORT_AVAILABLE_YES);
+        const bool hp = (headphone->available == PA_PORT_AVAILABLE_YES);
+
+        if (hs && hp)
+            state = eJack_Unknown;
+        else if (hs)
+            state = eJack_Headset;
+        else if (hp)
+            state = eJack_Headphones;
+        else
+            state = eJack_Unplugged;
+    }
+    else
+    {
+        /* One wired port only, so the pair cannot vouch for each other: trust
+         * "available" once the port has been seen unavailable at least once. */
+        const pa_sink_port_info *p = headset ? headset : headphone;
+
+        if (p->available == PA_PORT_AVAILABLE_NO)
+        {
+            self->mJackSeenUnplugged = true;
+            state = eJack_Unplugged;
+        }
+        else if (p->available == PA_PORT_AVAILABLE_YES && self->mJackSeenUnplugged)
+            state = headset ? eJack_Headset : eJack_Headphones;
+        else
+            state = eJack_Unknown;
+    }
+
+    self->setJackState(state);
+}
+
+void PalmLegacyManager::setJackState(EJackState state)
+{
+    if (state == mJackState)
+        return;
+
+    const bool wasPlugged = jackPlugged();
+
+    PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+        "Headphone jack state %d -> %d", (int) mJackState, (int) state);
+    mJackState = state;
+
+    /* Pulling the plug is the moment music would otherwise carry on out of
+     * the loudspeaker. Only a real unplug counts -- going from unknown to
+     * unplugged at start-up is not one. During a call there is nothing
+     * playing to pause, but resuming afterwards would now be out loud. */
+    if (wasPlugged && !jackPlugged())
+    {
+        if (mCallMode == eCallMode_None)
+            pauseMedia(false);
+        else
+            mResumeMediaAfterCall = false;
+    }
+
+    /* Re-route: effectiveRoute() has changed under the current call mode. */
+    updateCallMode();
+}
+
+static bool isBluetoothSink(const std::string &name)
+{
+    /* PulseAudio 17 names A2DP sinks bluez_sink.<addr>.<profile>; newer ones
+     * use bluez_output. */
+    return name.compare(0, 11, "bluez_sink.") == 0 ||
+           name.compare(0, 13, "bluez_output.") == 0;
+}
+
+void PalmLegacyManager::setActiveOutput(const std::string &sinkName)
+{
+    if (isBluetoothSink(sinkName))
+    {
+        if (sinkName == mBtAudioSink)
+            return;
+
+        PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+            "Bluetooth audio is now carried by %s", sinkName.c_str());
+        mBtAudioSink = sinkName;
+        mBtAudioName.clear();
+
+        /* The sink description is the name the user gave the device, which
+         * is what anything showing "connected to ..." wants. */
+        if (mPaReady && mPaContext)
+        {
+            pa_operation *op = pa_context_get_sink_info_by_name(mPaContext, sinkName.c_str(),
+                                                                &PalmLegacyManager::paBtSinkCb,
+                                                                this);
+            if (op)
+                pa_operation_unref(op);
+        }
+
+        notifyStatusSubscribers();
+        return;
+    }
+
+    if (mBtAudioSink.empty())
+        return;
+
+    PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+        "Bluetooth audio ended, output is now %s", sinkName.c_str());
+    mBtAudioSink.clear();
+    mBtAudioName.clear();
+
+    /* Same as pulling the headphone plug: the headset going away (switched
+     * off, out of range) would otherwise drop the music onto the speaker. */
+    if (mCallMode == eCallMode_None)
+        pauseMedia(false);
+    else
+        mResumeMediaAfterCall = false;
+
+    notifyStatusSubscribers();
+}
+
+void PalmLegacyManager::paBtSinkCb(pa_context *c, const pa_sink_info *info, int eol, void *userdata)
+{
+    PalmLegacyManager *self = static_cast<PalmLegacyManager*>(userdata);
+    if (!self || eol || !info || !info->name || !info->description)
+        return;
+
+    /* The headset may already be gone again by the time this arrives. */
+    if (self->mBtAudioSink != info->name)
+        return;
+
+    self->mBtAudioName = info->description;
+    self->notifyStatusSubscribers();
+}
+
+PalmLegacyManager::EPhoneRoute PalmLegacyManager::effectiveRoute() const
+{
+    const LegacyCategory *phone = categoryByName("/phone");
+    const EPhoneRoute chosen = phone ? phone->route : ePhoneRoute_Earpiece;
+    const EPhoneRoute jack = (mJackState == eJack_Headset) ? ePhoneRoute_HeadsetMic
+                                                           : ePhoneRoute_Headset;
+
+    if (mCallMode == eCallMode_None)
+        return jackPlugged() ? jack : ePhoneRoute_Speaker;
+
+    /* A plug in the jack takes over from the earpiece, as on any phone; a
+     * speakerphone the user picked stays the speakerphone. */
+    if (chosen == ePhoneRoute_Earpiece && jackPlugged())
+        return jack;
+
+    return chosen;
+}
+
+/* ------------------------------------------------------------------------- *
+ * Pausing media -- through com.webos.service.mediacontroller, the one place
+ * every registered media session (web apps through Chromium's media session,
+ * native players that register) can be reached from.
+ * ------------------------------------------------------------------------- */
+
+namespace {
+
+/* One pause in flight: the session list, then the play status of each
+ * session, then -- only if one of them is actually playing -- the key. Asking
+ * first is what makes resuming safe: media that was already paused must not
+ * start playing when the call ends. */
+struct MediaPauseRequest
+{
+    unsigned int generation;
+    bool resumeAfterCall;
+    int pending;
+    bool playing;
+};
+
+}
+
+void PalmLegacyManager::pauseMedia(bool resumeAfterCall)
+{
+    LSHandle *sh = GetPalmService();
+    if (!sh)
+        return;
+
+    MediaPauseRequest *req = new(std::nothrow) MediaPauseRequest{mMediaGeneration, resumeAfterCall,
+                                                                 0, false};
+    if (!req)
+        return;
+
+    CLSError lserror;
+    if (!LSCallOneReply(sh, MEDIA_SESSIONS_URI, "{}", &PalmLegacyManager::_mediaSessionsCb,
+                        req, nullptr, &lserror))
+    {
+        lserror.Print(__FUNCTION__, __LINE__);
+        delete req;
+    }
+}
+
+bool PalmLegacyManager::_mediaSessionsCb(LSHandle *sh, LSMessage *reply, void *ctx)
+{
+    MediaPauseRequest *req = static_cast<MediaPauseRequest*>(ctx);
+    if (!req)
+        return true;
+
+    const char *payload = reply ? LSMessageGetPayload(reply) : nullptr;
+    pbnjson::JValue obj = pbnjson::JDomParser::fromString(payload ? payload : "");
+    pbnjson::JValue sessions = obj.isObject() ? obj["sessionList"] : pbnjson::JValue();
+
+    /* No session at all is the common case, and mediacontroller answers it
+     * with returnValue false -- nothing is playing, nothing to do. */
+    if (!sessions.isArray() || sessions.arraySize() == 0)
+    {
+        delete req;
+        return true;
+    }
+
+    /* Hold one reference across the loop so a failed call cannot free the
+     * request while later ones still need it. */
+    req->pending = 1;
+    for (ssize_t i = 0; i < sessions.arraySize(); i++)
+    {
+        std::string mediaId;
+        if (sessions[i].asString(mediaId) != CONV_OK || mediaId.empty())
+            continue;
+
+        pbnjson::JValue query = pbnjson::Object();
+        query.put("mediaId", mediaId);
+
+        CLSError lserror;
+        ++req->pending;
+        if (!LSCallOneReply(sh, MEDIA_PLAY_STATUS_URI, query.stringify().c_str(),
+                            &PalmLegacyManager::_mediaPlayStatusCb, req, nullptr, &lserror))
+        {
+            lserror.Print(__FUNCTION__, __LINE__);
+            --req->pending;
+        }
+    }
+
+    if (--req->pending == 0)
+        delete req;
+    return true;
+}
+
+bool PalmLegacyManager::_mediaPlayStatusCb(LSHandle *sh, LSMessage *reply, void *ctx)
+{
+    MediaPauseRequest *req = static_cast<MediaPauseRequest*>(ctx);
+    if (!req)
+        return true;
+
+    const char *payload = reply ? LSMessageGetPayload(reply) : nullptr;
+    pbnjson::JValue obj = pbnjson::JDomParser::fromString(payload ? payload : "");
+    std::string playStatus;
+    if (obj.isObject() && obj["playStatus"].asString(playStatus) == CONV_OK &&
+        playStatus == "PLAYSTATE_PLAYING")
+        req->playing = true;
+
+    if (--req->pending > 0)
+        return true;
+
+    PalmLegacyManager *self = getPalmLegacyManagerInstance();
+
+    /* A pause for a call that has ended meanwhile must not go out, or it
+     * would silence the music the call's end just resumed. */
+    const bool stale = req->resumeAfterCall &&
+                       (!self || req->generation != self->mMediaGeneration ||
+                        self->mCallMode == eCallMode_None);
+
+    if (self && req->playing && !stale)
+    {
+        PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+            "Pausing media playback%s", req->resumeAfterCall ? " for a call" : "");
+        self->sendMediaKey("pause");
+        if (req->resumeAfterCall)
+            self->mResumeMediaAfterCall = true;
+    }
+
+    delete req;
+    return true;
+}
+
+void PalmLegacyManager::resumeMedia()
+{
+    /* Whatever pause is still in flight belongs to the call that just ended. */
+    ++mMediaGeneration;
+
+    if (!mResumeMediaAfterCall)
+        return;
+    mResumeMediaAfterCall = false;
+
+    PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+        "Resuming the media playback paused for the call");
+    sendMediaKey("play");
+}
+
+void PalmLegacyManager::sendMediaKey(const char *keyEvent)
+{
+    LSHandle *sh = GetPalmService();
+    if (!sh || !keyEvent)
+        return;
+
+    /* displayId is ignored without FEATURE_DUAL_DISPLAY; the key goes to the
+     * session that was last active, which is the one that was playing. */
+    pbnjson::JValue payload = pbnjson::Object();
+    payload.put("displayId", 0);
+    payload.put("keyEvent", keyEvent);
+
+    CLSError lserror;
+    if (!LSCallOneReply(sh, MEDIA_KEY_URI, payload.stringify().c_str(), nullptr, nullptr,
+                        nullptr, &lserror))
+    {
+        lserror.Print(__FUNCTION__, __LINE__);
+        PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+            "Could not send media key '%s'", keyEvent);
+    }
+}
+
 void PalmLegacyManager::updateCallMode()
 {
-    LegacyCategory *phone = categoryByName("/phone");
-    const EPhoneRoute route = phone ? phone->route : ePhoneRoute_Earpiece;
+    const EPhoneRoute route = effectiveRoute();
 
     /* The bug this guards against, found by decompiling the webOS 3.0.5 audiod
      * and present in audiod-pro's State::setCallMode() too: the disconnect path
@@ -1042,11 +1446,16 @@ void PalmLegacyManager::updateCallMode()
      *
      * The route is part of the comparison as well, or a speakerphone toggle
      * during a call (which changes the route but not the mode) would be
-     * swallowed here and never reach the hardware. */
+     * swallowed here and never reach the hardware.
+     *
+     * Subscribers are told either way: the routing may be unchanged while
+     * what they see (the jack, a call starting with the speaker already on)
+     * is not. */
     if (mCallMode == mAppliedCallMode && route == mAppliedRoute)
     {
         PM_LOG_DEBUG("updateCallMode: mode %d / route %d unchanged, nothing to apply",
             (int) mCallMode, (int) route);
+        notifyStatusSubscribers();
         return;
     }
 
@@ -1071,6 +1480,7 @@ void PalmLegacyManager::applyCallStatus()
                                 mCarrierStatus == eCallStatus_OnHold);
     const bool voipActive = (mVoipStatus == eCallStatus_Active ||
                              mVoipStatus == eCallStatus_OnHold);
+    const ECallMode previous = mCallMode;
 
     if (carrierActive)
         mCallMode = eCallMode_Carrier;
@@ -1079,8 +1489,26 @@ void PalmLegacyManager::applyCallStatus()
     else
         mCallMode = eCallMode_None;
 
+    /* Speakerphone belongs to the call it was picked for: the next call
+     * starts on the earpiece (or the headphones) again, as every phone does,
+     * whether or not the caller remembers to say so. */
+    if (previous != eCallMode_None && mCallMode == eCallMode_None)
+    {
+        LegacyCategory *phone = categoryByName("/phone");
+        if (phone && phone->route == ePhoneRoute_Speaker)
+            phone->route = ePhoneRoute_Earpiece;
+    }
+
     /* Deliberately called on the disconnect path too -- see updateCallMode(). */
     updateCallMode();
+
+    /* Media gives way to the call and comes back after it, the way it does
+     * on any phone. After the routing, so the music resumes out of whatever
+     * the call ended on rather than briefly out of the earpiece. */
+    if (previous == eCallMode_None && mCallMode != eCallMode_None)
+        pauseMedia(true);
+    else if (previous != eCallMode_None && mCallMode == eCallMode_None)
+        resumeMedia();
 }
 
 /* ------------------------------------------------------------------------- *
@@ -1109,6 +1537,16 @@ pbnjson::JValue PalmLegacyManager::rootStatus() const
     reply.put("speakerMode", categoryByName("/phone") &&
                              categoryByName("/phone")->route == ePhoneRoute_Speaker);
     reply.put("micMute", mMicMuted);
+
+    /* Where audio goes: the shell's headphone indicator and the phone app's
+     * route button read these. headsetState is "unknown" both before the
+     * first look and on a device without jack detection. */
+    static const char *const jackNames[] = { "unknown", "unplugged", "headphones", "headset" };
+    reply.put("headset", jackPlugged());
+    reply.put("headsetMic", mJackState == eJack_Headset);
+    reply.put("headsetState", jackNames[mJackState]);
+    reply.put("bluetoothAudio", !mBtAudioSink.empty());
+    reply.put("bluetoothAudioName", mBtAudioName);
     return reply;
 }
 
@@ -1273,9 +1711,7 @@ bool PalmLegacyManager::_setMicMute(LSHandle *sh, LSMessage *message, void *ctx)
         self->mMicMuted = micMute;
         /* Push it at the capture path rather than only recording it: the
          * source walk applies mMicMuted to the handset's own source. */
-        self->applyCallRouting(self->mCallMode,
-                               categoryByName("/phone") ? categoryByName("/phone")->route
-                                                        : ePhoneRoute_Earpiece);
+        self->applyCallRouting(self->mCallMode, self->effectiveRoute());
         self->notifyStatusSubscribers();
     }
 
@@ -1299,8 +1735,17 @@ bool PalmLegacyManager::_setCallMode(LSHandle *sh, LSMessage *message, void *ctx
         LegacyCategory *phone = categoryByName("/phone");
         bool inCall = (self->mCallMode != eCallMode_None);
         bool speakerMode = phone && phone->route == ePhoneRoute_Speaker;
-        msg.get("inCall", inCall);
-        msg.get("speakerMode", speakerMode);
+
+        /* Only what the caller actually sent: {"speakerMode":true} on its own
+         * is the speaker button mid-call and must leave the call up. Not
+         * msg.get() unguarded - pbnjson's asBool() writes false into the
+         * target for a missing key, so the call ended on every speaker
+         * toggle. */
+        pbnjson::JValue payload = msg.get();
+        if (payload["inCall"].isBoolean())
+            inCall = payload["inCall"].asBool();
+        if (payload["speakerMode"].isBoolean())
+            speakerMode = payload["speakerMode"].asBool();
 
         if (phone)
             phone->route = speakerMode ? ePhoneRoute_Speaker : ePhoneRoute_Earpiece;
@@ -1654,9 +2099,7 @@ bool PalmLegacyManager::_phoneSetMuted(LSHandle *sh, LSMessage *message, void *c
         /* On Palm hardware muting the call muted the capture path, not the
          * playback one -- the far end stops hearing you, you keep hearing them. */
         self->mMicMuted = muted;
-        LegacyCategory *phone = categoryByName("/phone");
-        self->applyCallRouting(self->mCallMode,
-                               phone ? phone->route : ePhoneRoute_Earpiece);
+        self->applyCallRouting(self->mCallMode, self->effectiveRoute());
         self->notifyStatusSubscribers();
     }
 

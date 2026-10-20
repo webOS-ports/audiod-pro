@@ -59,6 +59,7 @@ class ModuleManager
         void subscribeKeyInfo(ModuleInterface* module, EModuleEventType event, \
                 SERVER_TYPE_E eService, const std::string& key, const std::string& payload);
         void subscribeServerStatusInfo(ModuleInterface* module, SERVER_TYPE_E eStatus);
+        void addSubscriber(EModuleEventType eventType, ModuleInterface* module);
         //handling events
         void publishModuleEvent(events::EVENTS_T* ev);
 };

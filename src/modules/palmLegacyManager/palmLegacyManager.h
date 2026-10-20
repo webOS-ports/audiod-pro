@@ -108,6 +108,20 @@ class PalmLegacyManager : public ModuleInterface
             ePhoneRoute_Wireless
         };
 
+        /* What is in the 3.5mm jack, as droid-card reports it through port
+         * availability -- see paJackSinkCb() for how the four are told apart.
+         * Unknown covers both "not looked yet" and "this device has no jack
+         * detection", and in either case the jack is never routed to on its
+         * own: that is the failure 499cc71 fixed, an earpiece call sent out an
+         * empty jack because every port claimed to be available. */
+        enum EJackState
+        {
+            eJack_Unknown = 0,
+            eJack_Unplugged,
+            eJack_Headphones,   /* no microphone on the plug */
+            eJack_Headset       /* headphones with a microphone */
+        };
+
         /* One Palm category and what it maps onto in this generation.
          *
          * streamType is the audiod stream that carries the category's audio, or
@@ -165,6 +179,23 @@ class PalmLegacyManager : public ModuleInterface
         int mMasterVolume;
         bool mMasterMuted;
 
+        /* Headphones and Bluetooth audio. The jack is followed through
+         * PulseAudio port availability; Bluetooth through audioRouter's active
+         * output, which names the bluez sink while A2DP carries the audio.
+         * mJackSeenUnplugged only matters on a card that has just one of the
+         * two wired ports: there "available" means something only once the
+         * port has been seen unavailable, i.e. once detection proved to work. */
+        EJackState mJackState;
+        bool mJackSeenUnplugged;
+        std::string mBtAudioSink;
+        std::string mBtAudioName;
+
+        /* Media this module paused for a call, to be resumed when it ends.
+         * mMediaGeneration invalidates the replies of a pause still in flight
+         * when the call it was for has already ended. */
+        bool mResumeMediaAfterCall;
+        unsigned int mMediaGeneration;
+
         static LegacyCategory sCategories[];
 
         static bool mIsObjRegistered;
@@ -213,6 +244,31 @@ class PalmLegacyManager : public ModuleInterface
         static void paSinkPortSetCb(pa_context *c, int success, void *userdata);
         static void paSourceInfoCb(pa_context *c, const pa_source_info *info, int eol, void *userdata);
         static void paSourcePortSetCb(pa_context *c, int success, void *userdata);
+
+        /* Jack and Bluetooth tracking. */
+        static void paSubscribeCb(pa_context *c, pa_subscription_event_type_t t,
+                                  uint32_t idx, void *userdata);
+        static void paJackSinkCb(pa_context *c, const pa_sink_info *info, int eol, void *userdata);
+        static void paBtSinkCb(pa_context *c, const pa_sink_info *info, int eol, void *userdata);
+        void setJackState(EJackState state);
+        void setActiveOutput(const std::string &sinkName);
+        bool jackPlugged() const
+        {
+            return mJackState == eJack_Headphones || mJackState == eJack_Headset;
+        }
+
+        /* The route actually applied: the one the phone app chose, with a
+         * plugged-in jack taking over from the earpiece, and outside a call
+         * the jack or else the loudspeaker. */
+        EPhoneRoute effectiveRoute() const;
+
+        /* Pause whatever is playing through com.webos.service.mediacontroller,
+         * and, for a call, play it again once the call is over. */
+        void pauseMedia(bool resumeAfterCall);
+        void resumeMedia();
+        void sendMediaKey(const char *keyEvent);
+        static bool _mediaSessionsCb(LSHandle *sh, LSMessage *reply, void *ctx);
+        static bool _mediaPlayStatusCb(LSHandle *sh, LSMessage *reply, void *ctx);
 
         /* Push mCallMode/route to the hardware. Idempotent: returns early only
          * when neither the mode nor the route has changed since the last

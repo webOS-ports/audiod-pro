@@ -29,6 +29,7 @@
 #include "audioMixer.h"
 #include "log.h"
 #include "moduleFactory.h"
+#include "btState.h"
 
 #define BT_ADAPTER_SUBSCRIBE_PAYLOAD "{\"subscribe\":true}"
 #define BT_DEVICE_GET_STATUS    "luna://com.webos.service.bluetooth2/device/getStatus"
@@ -49,21 +50,17 @@ class BluetoothManager : public ModuleInterface
 {
     private:
 
-        bool mA2dpConnected;
         bool mA2dpSource;
         int mDisplayID;
-        std::string mConnectedDevice;
+        BtState mBtState;
         std::string mAdapterNameKey;
         std::string mA2dpAdapterName;
 
         pbnjson::JValue fileJsonBluetoothConfig;
         adapterInfo mAdapterNamesMap;
-        adapterInfo mAdapterSubscriptionStatusMap;
         adapterDisplayIDMap mAdapterDisplayIDMap;
         adapterAddressDisplayIDMap mAdapterAddressDisplayIDMap;
         displayConnectionStatus mDisplayConnectionStatus;
-        connectedAddressVector mConnectedAddressVector;
-        connectedAddressVector mA2dpGetStatus;
 
         BluetoothManager (const BluetoothManager&) = delete;
         BluetoothManager& operator=(const BluetoothManager&) = delete;
@@ -99,7 +96,9 @@ class BluetoothManager : public ModuleInterface
         void eventServerStatusInfo (SERVER_TYPE_E serviceName, bool connected);
         void eventKeyInfo (LUNA_KEY_TYPE_E type, LSMessage *message);
 
-        void setBlueToothA2DPActive (bool state, char *address, char *profile, std::string adapterAddress);
+        void setBlueToothA2DPActive (bool state, const std::string &address, const std::string &profile,
+                                     const std::string &adapterAddress);
+        int displayOfAdapter(const std::string &adapterAddress) const;
         void btAdapterQueryInfo (LSMessage *message);
         void btDeviceGetStatusInfo (LSMessage *message);
         void btA2DPGetStatusInfo (LSMessage *message);

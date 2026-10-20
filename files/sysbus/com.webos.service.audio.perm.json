@@ -6,6 +6,8 @@
         "physicaldevice.query",
         "audiooutput.management",
         "audio.query",
-        "audio.operation"
+        "audio.operation",
+        "mediacontroller.operation",
+        "mediacontroller.management"
     ]
 }
