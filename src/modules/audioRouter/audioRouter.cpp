@@ -102,7 +102,10 @@ void AudioRouter::eventDeviceConnectionStatus(const std::string &deviceName , co
             else
                 PM_LOG_WARNING(MSGID_AUDIOROUTER, INIT_KVCOUNT, "deviceName not found in:%s", items.first.c_str());
         }
-        if (!isBTDeviceMapped)
+        /* A headset's sink can be put before BluetoothManager says the
+         * headset is connected: it waits in mBTDeviceList until then. Only
+         * a sink being put waits; one going away is no device to add. */
+        if (!isBTDeviceMapped && utils::eDeviceConnected == deviceStatus)
         {
             PM_LOG_INFO(MSGID_AUDIOROUTER, INIT_KVCOUNT, "adding device to mBTDeviceList");
             BTInfo newDevice;
@@ -189,7 +192,16 @@ void AudioRouter::eventBTDeviceDisplayInfo(const bool &connectionStatus, const s
     {
         utils::itMapBTDeviceInfo it = mMapBTDeviceInfo.find(btDeviceAddress);
         if (it != mMapBTDeviceInfo.end())
+        {
+            /* The headset can be gone before its sink is - when bluetooth2
+             * reports it first. Its sink going after that would no longer
+             * map to its output, and the output would never be reset:
+             * reset it now, while the address still maps to it. Reset
+             * again when the sink goes, it changes nothing. */
+            eventDeviceConnectionStatus(std::string(BLUETOOTH_SINK_IDENTIFIER) + btDeviceAddress, "", "",
+                utils::eDeviceDisconnected, utils::ePulseMixer, true);
             mMapBTDeviceInfo.erase(it);
+        }
         for (auto it = mBTDeviceList.begin(); it != mBTDeviceList.end(); it++)
         {
             BTInfo btDevice = *it;
