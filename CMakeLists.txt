@@ -131,6 +131,7 @@ SET (modules_files
         src/modules/audioPolicyManager/audioPolicyManager.cpp
         src/modules/audioPolicyManager/volumePolicyInfoParser.cpp
         src/modules/bluetoothManager/bluetoothManager.cpp
+        src/modules/bluetoothManager/btState.cpp
         src/modules/connectionManager/connectionManager.cpp
         src/modules/masterVolumeManager/masterVolumeManager.cpp
         src/modules/settingsServiceManager/settingsServiceManager.cpp
@@ -220,3 +221,9 @@ install(FILES etc/udev/rules.d/86-audiod.rules DESTINATION ${WEBOS_INSTALL_WEBOS
 install(FILES etc/udev/scripts/headset.sh DESTINATION ${WEBOS_INSTALL_WEBOS}/etc/udev/scripts/ PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE)
 install(FILES etc/udev/scripts/usbsoundcard.sh DESTINATION ${WEBOS_INSTALL_WEBOS}/etc/udev/scripts/ PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE)
 
+
+option(BUILD_TESTING "Build the unit tests in tests/" OFF)
+if(BUILD_TESTING)
+    enable_testing()
+    add_subdirectory(tests)
+endif()

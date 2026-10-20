@@ -106,7 +106,6 @@ bool BluetoothManager::initializeBluetoothConfigurationInfo()
                     {
                         adapterName = element.asString();
                         PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT, "adapterName %s", adapterName.c_str());
-                        mAdapterSubscriptionStatusMap.insert(std::pair<std::string, bool>(adapterName, false));
                     }
                 }
             }
@@ -122,364 +121,255 @@ bool BluetoothManager::initializeBluetoothConfigurationInfo()
     return true;
 }
 
-void BluetoothManager::setBlueToothA2DPActive (bool state, char *address, char *profile, std::string adapterAddress)
+/* A reply from bluetooth2, read leniently: only the fields used are looked
+ * at, each checked for its type, so an error reply (which carries
+ * serviceName and nothing else expected) or a field bluetooth2 adds later
+ * is read rather than refused - and a reply is never replied to. */
+static pbnjson::JValue btReply(LSMessage *message, const char *caller)
+{
+    const char *payload = LSMessageGetPayload(message);
+    pbnjson::JValue reply = pbnjson::JDomParser::fromString(payload ? payload : "");
+    if (!reply.isObject())
+    {
+        PM_LOG_ERROR(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
+            "%s: reply is not a JSON object", caller);
+        return pbnjson::JValue();
+    }
+    PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
+        "%s: got '%s'", caller, payload);
+    return reply;
+}
+
+static bool btBool(const pbnjson::JValue &reply, const char *name)
+{
+    return reply[name].isBoolean() && reply[name].asBool();
+}
+
+static std::string btString(const pbnjson::JValue &reply, const char *name)
+{
+    return reply[name].isString() ? reply[name].asString() : std::string();
+}
+
+int BluetoothManager::displayOfAdapter(const std::string &adapterAddress) const
+{
+    auto it = mAdapterDisplayIDMap.find(adapterAddress);
+    return it == mAdapterDisplayIDMap.end() ? 0 : it->second;
+}
+
+void BluetoothManager::setBlueToothA2DPActive(bool state, const std::string &address,
+                                              const std::string &profile, const std::string &adapterAddress)
 {
     PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT, \
         "%s : state = %d, address = %s, profile = %s, adapterAddress = %s", \
-        __FUNCTION__, state, address, profile, adapterAddress.c_str());
-    int display = 0;
-
-    std::vector<std::string>::iterator it;
-    std::map<std::string, int>::iterator iter;
-    std::map<int, bool>::iterator mapIter;
-
-    std::string addressValue(address);
-    it = std::find(mConnectedAddressVector.begin(), mConnectedAddressVector.end(), addressValue);
+        __FUNCTION__, state, address.c_str(), profile.c_str(), adapterAddress.c_str());
+    int display = displayOfAdapter(adapterAddress);
 
     if (state)
     {
-        if (it == mConnectedAddressVector.end())
+        if (!mBtState.connect(address, adapterAddress))
         {
-            mConnectedAddressVector.push_back(addressValue);
-
-            for (iter = mAdapterDisplayIDMap.begin(); iter != mAdapterDisplayIDMap.end(); iter++)
-            {
-                PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
-                    "mAdapterDisplayIDMap adapter names is %s and display id is %d", iter->first.c_str(), iter->second);
-            }
-            for (iter = mAdapterDisplayIDMap.begin(); iter != mAdapterDisplayIDMap.end(); iter++)
-            {
-                if (iter->first == adapterAddress)
-                {
-                    display = iter->second;
-                    break;
-                }
-            }
-            mapIter = mDisplayConnectionStatus.find(display);
-            if (mapIter != mDisplayConnectionStatus.end())
-            {
-                mapIter->second = true;
-            }
-            PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
-                "Display value is %d", display);
-            if (mObjAudioMixer)
-            {
-                mObjAudioMixer->programLoadBluetooth(address, profile, display);
-                PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT, \
-                    "%s : loaded bluetooth device",  __FUNCTION__);
-            }
-            if (mObjModuleManager)
-            {
-                events::EVENT_MASTER_VOLUME_STATUS_T eventMasterVolumeStatus;
-                eventMasterVolumeStatus.eventName = utils::eEventMasterVolumeStatus;
-                mObjModuleManager->publishModuleEvent((events::EVENTS_T*)&eventMasterVolumeStatus);
-            }
-            else
-                PM_LOG_ERROR(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
-                           "mObjModuleManager is NULL");
-        }
-        else
             PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
                 "%s BT device is already in connected state",  __FUNCTION__);
+            return;
+        }
+        auto mapIter = mDisplayConnectionStatus.find(display);
+        if (mapIter != mDisplayConnectionStatus.end())
+            mapIter->second = true;
+        PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
+            "Display value is %d", display);
+        if (mObjAudioMixer)
+        {
+            mObjAudioMixer->programLoadBluetooth(address.c_str(), profile.c_str(), display);
+            PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT, \
+                "%s : loaded bluetooth device",  __FUNCTION__);
+        }
+        if (mObjModuleManager)
+        {
+            events::EVENT_MASTER_VOLUME_STATUS_T eventMasterVolumeStatus;
+            eventMasterVolumeStatus.eventName = utils::eEventMasterVolumeStatus;
+            mObjModuleManager->publishModuleEvent((events::EVENTS_T*)&eventMasterVolumeStatus);
+        }
+        else
+            PM_LOG_ERROR(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
+                       "mObjModuleManager is NULL");
     }
     else
     {
-        if (it != mConnectedAddressVector.end())
+        if (!mBtState.disconnect(address))
+            return;
+        auto mapIter = mDisplayConnectionStatus.find(display);
+        if (mapIter != mDisplayConnectionStatus.end())
+            mapIter->second = false;
+        PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
+                "Display value is %d", display);
+        if (mObjAudioMixer)
         {
-            for (iter = mAdapterDisplayIDMap.begin(); iter != mAdapterDisplayIDMap.end(); iter++)
-            {
-                if (iter->first == adapterAddress)
-                {
-                    display = iter->second;
-                    break;
-                }
-            }
-            mapIter = mDisplayConnectionStatus.find(display);
-            if (mapIter != mDisplayConnectionStatus.end())
-            {
-                mapIter->second = false;
-            }
+            mObjAudioMixer->programUnloadBluetooth(profile.c_str(), display);
             PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
-                    "Display value is %d", display);
-
-            if (mObjAudioMixer)
-            {
-                mObjAudioMixer->programUnloadBluetooth(profile, display);
-                PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
-                    "%s : unloaded bluetooth device",  __FUNCTION__);
-            }
-            mConnectedAddressVector.erase(it);
+                "%s : unloaded bluetooth device",  __FUNCTION__);
         }
     }
-    if (mObjModuleManager)
+    if (mObjModuleManager && display != 0)
     {
         events::EVENT_BT_DEVICE_DISPAY_INFO_T stEventBtDeviceDisplayInfo;
         stEventBtDeviceDisplayInfo.eventName = utils::eEventBTDeviceDisplayInfo;
         stEventBtDeviceDisplayInfo.displayId = display;
         stEventBtDeviceDisplayInfo.address = address;
         stEventBtDeviceDisplayInfo.state = state;
-        if (display != 0)
-            mObjModuleManager->publishModuleEvent((events::EVENTS_T*)&stEventBtDeviceDisplayInfo);
+        mObjModuleManager->publishModuleEvent((events::EVENTS_T*)&stEventBtDeviceDisplayInfo);
     }
 }
 
 void BluetoothManager::btAdapterQueryInfo(LSMessage *message)
 {
-    PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
-        "%s", __FUNCTION__);
-
-    LSMessageJsonParser msg(message, STRICT_SCHEMA(PROPS_5(PROP(subscribed, boolean),
-    PROP(adapters, array), PROP(returnValue, boolean),
-    PROP(errorCode, integer), PROP(errorText, string))
-    REQUIRED_1(returnValue)));
-
-    if (!msg.parse(__FUNCTION__))
+    pbnjson::JValue reply = btReply(message, __FUNCTION__);
+    if (reply.isNull())
         return;
-    bool returnValue = false;
-    std::string adapterAddress;
-    msg.get("returnValue", returnValue);
-    std::map<std::string, int>::iterator iter;
-    if (returnValue)
+    if (!btBool(reply, "returnValue"))
     {
-        pbnjson::JValue adapterStatus = msg.get();
-        pbnjson::JValue adapters = adapterStatus["adapters"];
-        if (!adapters.isArray())
-            return;
-        if (0 == adapters.arraySize())
-        {
-            PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,"adapters array size is zero");
-            return;
-        }
-        bool status = false;
+        PM_LOG_ERROR(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
+            "%s: adapter/getStatus failed: %s", __FUNCTION__, btString(reply, "errorText").c_str());
+        return;
+    }
 
-        PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,"adapters array size is %zd", adapters.arraySize());
-        for (int i = 0; i < adapters.arraySize(); i++)
+    pbnjson::JValue adapters = reply["adapters"];
+    for (int i = 0; adapters.isArray() && i < adapters.arraySize(); i++)
+    {
+        std::string adapterName = btString(adapters[i], mAdapterNameKey.c_str());
+        std::string adapterAddress = btString(adapters[i], "adapterAddress");
+        PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
+            "adapterAddress = %s, a2dpAdapterName = %s, adapterName = %s",
+            adapterAddress.c_str(), mA2dpAdapterName.c_str(), adapterName.c_str());
+        if (adapterName.empty() || adapterAddress.empty())
+            continue;
+
+        if (adapterName == "hci0")
+            mAdapterDisplayIDMap[adapterAddress] = 1;
+        else if (adapterName == "hci1")
+            mAdapterDisplayIDMap[adapterAddress] = 2;
+
+        /* device/getStatus once per adapter, made again when it ended -
+         * as it does when bluetooth2 restarts, or refuses it for an
+         * adapter that is not powered yet; this report comes again when
+         * the adapter changes. */
+        bool a2dpSource = (mA2dpAdapterName == adapterName);
+        if (!mBtState.takeDeviceSubscription((a2dpSource ? "source:" : "sink:") + adapterName))
         {
-            std::string adapterName = adapters[i][mAdapterNameKey].asString();
-            adapterAddress = adapters[i]["adapterAddress"].asString();
             PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
-                "adapterAddress = %s, a2dpAdapterName = %s, adapterName = %s", adapterAddress.c_str(), mA2dpAdapterName.c_str(), adapterName.c_str());
-            std::map<std::string, bool>::iterator it = mAdapterSubscriptionStatusMap.find(adapterName);
-            if (it != mAdapterSubscriptionStatusMap.end())
-            {
-                status = it->second;
-            }
-
-            if (adapterName == "hci0")
-                mAdapterDisplayIDMap.insert(std::pair<std::string, int >(adapterAddress, 1));
-            else if (adapterName == "hci1")
-                mAdapterDisplayIDMap.insert(std::pair<std::string, int >(adapterAddress, 2));
-
-            if (mA2dpAdapterName == adapterName)
-            {
-                if (status == false)
-                {
-                    if (it != mAdapterSubscriptionStatusMap.end())
-                    {
-                        it->second = true;
-                    }
-                    std::string payload = string_printf("{\"adapterAddress\":\"%s\",\"subscribe\":true}", adapterAddress.c_str());
-                    PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
-                        "a2dp %s : payload = %s", __FUNCTION__, payload.c_str());
-                    mObjModuleManager->subscribeKeyInfo(this, eEventA2DPDeviceStatus, eBluetoothService2,
-                        BT_DEVICE_GET_STATUS, payload);
-                }
-                else
-                    PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
-                    "%s: Already subscribed for adapter: %s", __FUNCTION__, adapterAddress.c_str());
-            }
-            else if (!adapterName.empty())
-            {
-                if (false == status)
-                {
-                    if (it != mAdapterSubscriptionStatusMap.end())
-                    {
-                        it->second = true;
-                    }
-                    std::string payload = string_printf("{\"adapterAddress\":\"%s\",\"subscribe\":true}", adapterAddress.c_str());
-                    PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
-                        "%s : payload = %s", __FUNCTION__, payload.c_str());
-                    mObjModuleManager->subscribeKeyInfo(this, eEventBTDeviceStatus, eBluetoothService2,
-                        BT_DEVICE_GET_STATUS, payload);
-                }
-                else
-                    PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
-                    "%s: Already subscribed for default adapter: %s", __FUNCTION__, adapterAddress.c_str());
-            }
+                "%s: Already subscribed for adapter: %s", __FUNCTION__, adapterAddress.c_str());
+            continue;
         }
+        std::string payload = string_printf("{\"adapterAddress\":\"%s\",\"subscribe\":true}", adapterAddress.c_str());
+        PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
+            "%s : payload = %s", __FUNCTION__, payload.c_str());
+        mObjModuleManager->subscribeKeyInfo(this, a2dpSource ? eEventA2DPDeviceStatus : eEventBTDeviceStatus,
+            eBluetoothService2, BT_DEVICE_GET_STATUS, payload);
     }
 }
 
 void BluetoothManager::btDeviceGetStatusInfo (LSMessage *message)
 {
-    PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
-        "%s", __FUNCTION__);
-
-    LSMessageJsonParser msg(message, STRICT_SCHEMA(PROPS_6(PROP(subscribed, boolean),
-    PROP(adapterAddress, string), PROP(returnValue, boolean), PROP(devices,array),
-    PROP(errorCode, integer), PROP(errorText, string))
-    REQUIRED_1(returnValue)));
-
-    if (!msg.parse(__FUNCTION__))
+    pbnjson::JValue reply = btReply(message, __FUNCTION__);
+    if (reply.isNull())
+        return;
+    if (!btBool(reply, "returnValue"))
     {
+        /* The subscription is over; the next adapter report makes it again. */
         PM_LOG_ERROR(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
-            "%s parse error", __FUNCTION__);
+            "%s device status subscription failed: %s", __FUNCTION__, btString(reply, "errorText").c_str());
+        mBtState.deviceSubscriptionsEnded();
         return;
     }
-    bool returnValue = false;
-    std::vector<std::string>::iterator iter;
 
-    msg.get("returnValue", returnValue);
-    if (returnValue)
+    std::string replyAdapter = btString(reply, "adapterAddress");
+    std::set<std::string> reported;
+    pbnjson::JValue devices = reply["devices"];
+    for (int i = 0; devices.isArray() && i < devices.arraySize(); i++)
     {
-        pbnjson::JValue deviceStatus = msg.get();
-        pbnjson::JValue devices = deviceStatus["devices"];
-        if (!devices.isArray())
-        {
-            PM_LOG_ERROR(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
-                "%s devices.isArray false", __FUNCTION__);
-            return;
-        }
-        if (0 == devices.arraySize())
-        {
-            PM_LOG_ERROR(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
-                "%s devices.arraySize zero", __FUNCTION__);
-            mA2dpConnected = false;
-            return;
-        }
-        for (int i = 0; i < devices.arraySize(); i++)
-        {
-            pbnjson::JValue connectedProfiles = devices[i]["connectedProfiles"];
-            std::string profile;
-            std::string role;
-            std::string address;
-            std::string adapterAddress;
+        pbnjson::JValue device = devices[i];
+        pbnjson::JValue profiles = device["connectedProfiles"];
+        bool a2dp = false;
+        for (int j = 0; profiles.isArray() && j < profiles.arraySize(); j++)
+            a2dp = a2dp || (profiles[j].isString() && profiles[j].asString() == "a2dp");
+        if (!a2dp)
+            continue;
 
-            if (0 == connectedProfiles.arraySize())
-            {
-                PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
-                    "%s connectedProfiles.arraySize is zero", __FUNCTION__);
-                continue;
-            }
-            for (int j = 0; j < connectedProfiles.arraySize(); j++)
-            {
-                profile = connectedProfiles[j].asString();
-                PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
-                    " inside for getting connectedProfiles : %s", profile.c_str());
-                if ("a2dp" == profile )
-                {
-                    pbnjson::JValue connectedRoles = devices[i]["connectedRoles"];
-                    if (0 == connectedRoles.arraySize())
-                        return;
-                    for (int k = 0; k < connectedRoles.arraySize(); k++)
-                    {
-                        role = connectedRoles[k].asString();
-                        PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
-                            "%s profile = %s and role = %s", __FUNCTION__, profile.c_str(), role.c_str());
-                        if (("A2DP_SRC" == role) || ("HFP_AG" == role))
-                        {
-                            PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
-                                 "%s Not considering bluetooth loading as profile is A2DP_SRC/HFP", __FUNCTION__);
-                            return;
-                        }
-                    }
-                    address = devices[i]["address"].asString();
-                    adapterAddress = devices[i]["adapterAddress"].asString();
-                    mA2dpConnected = true;
-                    char * device_address = (char*)address.c_str();
-                    PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
-                        "Send info to PA for loading the bluez module active = %d", mA2dpConnected);
-                    setBlueToothA2DPActive(mA2dpConnected, device_address, (char*)profile.c_str(), adapterAddress);
-                    std::string payload = string_printf("{\"adapterAddress\":\"%s\",\"address\":\"%s\",\"subscribe\":true}",adapterAddress.c_str(), address.c_str());
-                    PM_LOG_ERROR(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
-                        "payload = %s", payload.c_str());
-
-                    iter = std::find(mA2dpGetStatus.begin(), mA2dpGetStatus.end(), adapterAddress);
-                    if (iter == mA2dpGetStatus.end())
-                    {
-                        mObjModuleManager->subscribeKeyInfo(this, eLunaEventA2DPStatus,
-                            eBluetoothService2, BT_A2DP_GET_STATUS, payload);
-                        mA2dpGetStatus.push_back(adapterAddress);
-                    }
-                    break;
-                }
-            }
-        }
-        if (nullptr == mConnectedDevice.c_str())
+        /* A device we are the A2DP sink of (a phone playing to us), or
+         * the hands-free gateway, is not a headset to play to. */
+        bool sink = true;
+        pbnjson::JValue roles = device["connectedRoles"];
+        for (int k = 0; roles.isArray() && k < roles.arraySize(); k++)
         {
-            mA2dpConnected = false;
-            return;
+            std::string role = roles[k].isString() ? roles[k].asString() : std::string();
+            if (role == "A2DP_SRC" || role == "HFP_AG")
+                sink = false;
+        }
+        std::string address = btString(device, "address");
+        std::string adapterAddress = btString(device, "adapterAddress");
+        if (adapterAddress.empty())
+            adapterAddress = replyAdapter;
+        if (!sink || address.empty())
+        {
+            PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
+                "%s: %s is not a headset to play to", __FUNCTION__, address.c_str());
+            continue;
+        }
+        reported.insert(address);
+        if (replyAdapter.empty())
+            replyAdapter = adapterAddress;
+
+        PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
+            "Send info to PA for loading the bluez module, address = %s", address.c_str());
+        setBlueToothA2DPActive(true, address, "a2dp", adapterAddress);
+
+        if (mBtState.takeA2dpSubscription(adapterAddress))
+        {
+            std::string payload = string_printf("{\"adapterAddress\":\"%s\",\"address\":\"%s\",\"subscribe\":true}",
+                adapterAddress.c_str(), address.c_str());
+            PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
+                "a2dp/getStatus payload = %s", payload.c_str());
+            mObjModuleManager->subscribeKeyInfo(this, eLunaEventA2DPStatus,
+                eBluetoothService2, BT_A2DP_GET_STATUS, payload);
         }
     }
-    else
+
+    /* The whole list of the adapter: whatever was connected on it and is
+     * not in it any more has gone - also while audiod was not told, as when
+     * a subscription had ended. */
+    for (const std::string &address : mBtState.gone(replyAdapter, reported))
     {
-        PM_LOG_ERROR(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
-            "%s device status subscription failed", __FUNCTION__);
-        mConnectedDevice.clear();
-        mA2dpConnected = false;
-        return;
+        PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
+            "%s: %s no longer has A2DP", __FUNCTION__, address.c_str());
+        setBlueToothA2DPActive(false, address, "a2dp", replyAdapter);
     }
 }
 
-void BluetoothManager:: btA2DPGetStatusInfo (LSMessage *message)
+void BluetoothManager::btA2DPGetStatusInfo (LSMessage *message)
 {
-    PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
-        "%s", __FUNCTION__);
-
-    LSMessageJsonParser msg(message, STRICT_SCHEMA(PROPS_9(PROP(subscribed, boolean),
-    PROP(adapterAddress, string), PROP(returnValue, boolean), PROP(connecting, boolean),
-    PROP(connected, boolean), PROP(playing, boolean), PROP(address, string),
-    PROP(errorCode, integer), PROP(errorText, string))
-    REQUIRED_1(returnValue)));
-
-    if (!msg.parse(__FUNCTION__))
+    pbnjson::JValue reply = btReply(message, __FUNCTION__);
+    if (reply.isNull())
         return;
-
-    bool returnValue = false;
-    msg.get("returnValue", returnValue);
-    if (returnValue)
-    {
-        std::string a2dpDeviceAddress;
-        std::string adapterAddress;
-        bool connected = false;
-        std::string profile = "a2dp";
-        msg.get("connected", connected);
-        msg.get("address", a2dpDeviceAddress);
-        msg.get("adapterAddress", adapterAddress);
-        PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
-            "Device MAC address %s Connection Status %d adapter address %s",\
-                a2dpDeviceAddress.c_str(), connected, adapterAddress.c_str());
-        if (nullptr == a2dpDeviceAddress.c_str())
-        {
-            PM_LOG_ERROR(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
-                "Device MAC address field not found");
-            return;
-        }
-        if (connected)
-        {
-            char * device_address = (char*)a2dpDeviceAddress.c_str();
-            PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
-                "%s Send info to PA for loading the bluez module active = %d, address = %s",\
-                     __FUNCTION__, connected, a2dpDeviceAddress.c_str());
-            setBlueToothA2DPActive(connected, device_address, (char*)profile.c_str(), adapterAddress);
-        }
-        else
-        {
-            mA2dpConnected = false;
-            char * device_address = (char*)a2dpDeviceAddress.c_str();
-            PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
-                "Send info to PA for unloading the bluez module active = %d, address = %s",\
-                mA2dpConnected, a2dpDeviceAddress.c_str());
-            setBlueToothA2DPActive(false, device_address, (char*)profile.c_str(), adapterAddress);
-        }
-    }
-    else
+    if (!btBool(reply, "returnValue"))
     {
         PM_LOG_ERROR(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
-            "%s a2dp status subscription failed", __FUNCTION__);
-        mConnectedDevice.clear();
-        mA2dpConnected = false;
+            "%s a2dp status subscription failed: %s", __FUNCTION__, btString(reply, "errorText").c_str());
+        mBtState.a2dpSubscriptionsEnded();
+        return;
     }
+
+    std::string address = btString(reply, "address");
+    std::string adapterAddress = btString(reply, "adapterAddress");
+    bool connected = btBool(reply, "connected");
+    PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
+        "Device MAC address %s Connection Status %d adapter address %s",\
+            address.c_str(), connected, adapterAddress.c_str());
+    if (address.empty())
+    {
+        PM_LOG_ERROR(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
+            "Device MAC address field not found");
+        return;
+    }
+    setBlueToothA2DPActive(connected, address, "a2dp", adapterAddress);
 }
 
 void BluetoothManager::setBluetoothA2DPSource(bool state)
@@ -625,15 +515,28 @@ void BluetoothManager::eventServerStatusInfo(SERVER_TYPE_E serviceName, bool con
 {
     PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
         "Got BT server status event %d : %d", serviceName, connected);
-    if (connected && serviceName == eBluetoothService2)
+    if (serviceName != eBluetoothService2)
+        return;
+    if (connected)
     {
+        /* lunaEventSubscriber makes adapter/getStatus again; its report
+         * makes the device subscriptions again. */
         PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
             "BT service is connected");
+    }
+    else
+    {
+        /* Every subscription on bluetooth2 ended with it. The devices stay
+         * as they were - its going does not drop a link - until its next
+         * report says otherwise. */
+        PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
+            "BT service went away");
+        mBtState.serviceDown();
     }
 }
 
 BluetoothManager::BluetoothManager(ModuleConfig* const pConfObj):
-    mA2dpConnected(false), mA2dpSource(false), mDisplayID(0)
+    mA2dpSource(false), mDisplayID(0)
 {
     PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT, \
         "BT manager constructor");
