@@ -30,6 +30,7 @@
 #include "moduleFactory.h"
 #include "moduleManager.h"
 #include "callState.h"
+#include "ringState.h"
 
 /*
  * palmLegacyManager -- serves the Palm-era com.palm.audio API on top of audiod.
@@ -134,8 +135,12 @@ class PalmLegacyManager : public ModuleInterface
         ECallMode mCallMode;
         ECallMode mAppliedCallMode;
         EPhoneRoute mAppliedRoute;
+        bool mAppliedRing;
         /* Who has reported which calls; mCallMode follows from it. */
         CallState mCallState;
+        /* Whether a ringtone or alarm is playing: with headphones in, it
+         * rings on the loudspeaker as well. */
+        RingState mRingState;
 
         bool mPhoneMuted;
         bool mMicMuted;
@@ -202,6 +207,7 @@ class PalmLegacyManager : public ModuleInterface
             PalmLegacyManager *self;
             ECallMode mode;
             EPhoneRoute route;
+            bool ring;
             int refs;
         };
 
@@ -225,6 +231,7 @@ class PalmLegacyManager : public ModuleInterface
         static void paSubscribeCb(pa_context *c, pa_subscription_event_type_t t,
                                   uint32_t idx, void *userdata);
         static void paJackSinkCb(pa_context *c, const pa_sink_info *info, int eol, void *userdata);
+        static void paRingInputCb(pa_context *c, const pa_sink_input_info *info, int eol, void *userdata);
         static void paBtSinkCb(pa_context *c, const pa_sink_info *info, int eol, void *userdata);
         void setJackState(EJackState state);
         void setActiveOutput(const std::string &sinkName);

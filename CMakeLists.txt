@@ -126,6 +126,7 @@ endif(AUDIOD_TEST_API)
 SET (modules_files
         src/modules/palmLegacyManager/palmLegacyManager.cpp
         src/modules/palmLegacyManager/callState.cpp
+        src/modules/palmLegacyManager/ringState.cpp
         src/modules/lunaEventSubscriber/lunaEventSubscriber.cpp
         src/modules/masterVolumeManager/OSEMasterVolumeManager.cpp
         src/modules/deviceManager/udevDeviceManager.cpp
