@@ -15,14 +15,19 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Unit tests for the parts of audiod that stand on their own: the
-# Bluetooth manager's bookkeeping (btState).
+# Bluetooth manager's bookkeeping (btState) and the call state the legacy
+# manager routes and pauses media by (callState).
 
 find_package(GTest REQUIRED)
 
 add_executable(audiod-tests
     ${CMAKE_SOURCE_DIR}/src/modules/bluetoothManager/btState.cpp
-    test_btstate.cpp)
-target_include_directories(audiod-tests PRIVATE ${CMAKE_SOURCE_DIR}/src/modules/bluetoothManager)
+    ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/callState.cpp
+    test_btstate.cpp
+    test_callstate.cpp)
+target_include_directories(audiod-tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/modules/bluetoothManager
+    ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager)
 target_compile_options(audiod-tests PRIVATE -Wall -Wextra)
 target_link_libraries(audiod-tests GTest::gtest GTest::gtest_main pthread)
 add_test(NAME audiod-tests COMMAND audiod-tests)
