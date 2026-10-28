@@ -74,9 +74,6 @@ PalmLegacyManager::PalmLegacyManager(ModuleConfig* const pConfObj) :
     mCallMode(eCallMode_None),
     mAppliedCallMode(eCallMode_None),
     mAppliedRoute(ePhoneRoute_Earpiece),
-    mCarrierStatus(eCallStatus_NoCall),
-    mVoipStatus(eCallStatus_NoCall),
-    mCallWithVideo(false),
     mPhoneMuted(false),
     mMicMuted(false),
     mHac(false),
@@ -1476,23 +1473,14 @@ void PalmLegacyManager::updateCallMode()
 
 void PalmLegacyManager::applyCallStatus()
 {
-    const bool carrierActive = (mCarrierStatus == eCallStatus_Active ||
-                                mCarrierStatus == eCallStatus_OnHold);
-    const bool voipActive = (mVoipStatus == eCallStatus_Active ||
-                             mVoipStatus == eCallStatus_OnHold);
     const ECallMode previous = mCallMode;
-
-    if (carrierActive)
-        mCallMode = eCallMode_Carrier;
-    else if (voipActive)
-        mCallMode = eCallMode_Voip;
-    else
-        mCallMode = eCallMode_None;
+    mCallMode = mCallState.mode();
+    const CallState::Transition change = CallState::transition(previous, mCallMode);
 
     /* Speakerphone belongs to the call it was picked for: the next call
      * starts on the earpiece (or the headphones) again, as every phone does,
      * whether or not the caller remembers to say so. */
-    if (previous != eCallMode_None && mCallMode == eCallMode_None)
+    if (change.resetSpeaker)
     {
         LegacyCategory *phone = categoryByName("/phone");
         if (phone && phone->route == ePhoneRoute_Speaker)
@@ -1505,9 +1493,9 @@ void PalmLegacyManager::applyCallStatus()
     /* Media gives way to the call and comes back after it, the way it does
      * on any phone. After the routing, so the music resumes out of whatever
      * the call ended on rather than briefly out of the earpiece. */
-    if (previous == eCallMode_None && mCallMode != eCallMode_None)
+    if (change.pauseMedia)
         pauseMedia(true);
-    else if (previous != eCallMode_None && mCallMode == eCallMode_None)
+    else if (change.resumeMedia)
         resumeMedia();
 }
 
@@ -1723,7 +1711,8 @@ bool PalmLegacyManager::_setCallMode(LSHandle *sh, LSMessage *message, void *ctx
 {
     /* The org.webosports.service.audio spelling used by the QML phone app and
      * kept for anything still calling it. phone/CallStatusUpdate is the richer
-     * path and the one com.palm.app.phone uses. */
+     * path and the one com.palm.app.phone uses. inCall is the phone app's
+     * cellular call only: VoIP calls are reported by their connectors. */
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
     LSMessageJsonParser msg(message, SCHEMA_2(OPTIONAL(inCall, boolean),
                                               OPTIONAL(speakerMode, boolean)));
@@ -1733,7 +1722,6 @@ bool PalmLegacyManager::_setCallMode(LSHandle *sh, LSMessage *message, void *ctx
     if (self)
     {
         LegacyCategory *phone = categoryByName("/phone");
-        bool inCall = (self->mCallMode != eCallMode_None);
         bool speakerMode = phone && phone->route == ePhoneRoute_Speaker;
 
         /* Only what the caller actually sent: {"speakerMode":true} on its own
@@ -1743,15 +1731,13 @@ bool PalmLegacyManager::_setCallMode(LSHandle *sh, LSMessage *message, void *ctx
          * toggle. */
         pbnjson::JValue payload = msg.get();
         if (payload["inCall"].isBoolean())
-            inCall = payload["inCall"].asBool();
+            self->mCallState.setCarrierCall(payload["inCall"].asBool());
         if (payload["speakerMode"].isBoolean())
             speakerMode = payload["speakerMode"].asBool();
 
         if (phone)
             phone->route = speakerMode ? ePhoneRoute_Speaker : ePhoneRoute_Earpiece;
 
-        self->mCarrierStatus = inCall ? eCallStatus_Active : eCallStatus_Disconnected;
-        self->mVoipStatus = eCallStatus_Disconnected;
         self->applyCallStatus();
     }
 
@@ -2116,6 +2102,9 @@ bool PalmLegacyManager::_phoneSetMuted(LSHandle *sh, LSMessage *message, void *c
  * CallSynergizer.js actually speaks; the {transport,status} shape this module
  * used to declare matched nothing, and because SCHEMA_n sets
  * additionalProperties:false every real update was rejected before it arrived.
+ *
+ * The messaging connectors in imlibpurpleservice (WhatsApp, Telegram, Signal,
+ * Teams) send the same shape for their VoIP calls, with their own transport.
  */
 bool PalmLegacyManager::_callStatusUpdate(LSHandle *sh, LSMessage *message, void *ctx)
 {
@@ -2137,38 +2126,18 @@ bool PalmLegacyManager::_callStatusUpdate(LSHandle *sh, LSMessage *message, void
         return true;
     }
 
-    auto statusFromString = [](const std::string &s) {
-        if (s == "active")      return eCallStatus_Active;
-        if (s == "incoming")    return eCallStatus_Incoming;
-        if (s == "connecting")  return eCallStatus_Connecting;
-        if (s == "dialing")     return eCallStatus_Dialing;
-        if (s == "onHold")      return eCallStatus_OnHold;
-        if (s == "disconnected") return eCallStatus_Disconnected;
-        return eCallStatus_NoCall;
-    };
+    /* Each sender's update replaces only what that sender reported before:
+     * see CallState. A sender without a bus name (luna-send) is told apart by
+     * its unique name. */
+    const char *reporter = LSMessageGetSenderServiceName(message);
+    if (!reporter)
+        reporter = LSMessageGetSender(message);
 
-    /* "No calls at all" is reported as an empty array rather than a line in
-     * state "disconnected". Without this the loop below never runs, the call
-     * mode is never reset, and every getOnActiveCall()-gated behaviour stays
-     * stuck on the last call for the life of the process. Found on real
-     * hardware during the TouchPad port; carried over verbatim. */
-    if (0 == lines.arraySize())
-    {
-        self->mCarrierStatus = eCallStatus_Disconnected;
-        self->mVoipStatus = eCallStatus_Disconnected;
-        self->mCallWithVideo = false;
-        self->applyCallStatus();
-        replySuccess(sh, message);
-        return true;
-    }
-
-    bool sawCarrier = false, sawVoip = false;
-    bool withVideo = false;
-
+    std::vector<CallState::Line> reported;
     for (ssize_t i = 0; i < lines.arraySize(); i++)
     {
         std::string state;
-        std::string transport;
+        CallState::Line line{eCallStatus_NoCall, std::string(), false};
 
         if (lines[i]["state"].asString(state) != CONV_OK)
         {
@@ -2176,39 +2145,26 @@ bool PalmLegacyManager::_callStatusUpdate(LSHandle *sh, LSMessage *message, void
                 "CallStatusUpdate: line %zd has no state", (ssize_t) i);
             continue;
         }
+        line.status = CallState::statusFromString(state);
 
         pbnjson::JValue calls = lines[i]["calls"];
         if (calls.isArray() && calls.arraySize() > 0)
-            calls[0]["transport"].asString(transport);
-
-        const ECallStatus status = statusFromString(state);
-
-        /* com.palm.telephony is the carrier stack; anything else (our IM/VoIP
-         * connectors) stays on the normal PCM path. */
-        if (transport == "com.palm.telephony")
         {
-            sawCarrier = true;
-            self->mCarrierStatus = status;
+            calls[0]["transport"].asString(line.transport);
+            calls[0]["video"].asBool(line.video);
         }
-        else
-        {
-            sawVoip = true;
-            self->mVoipStatus = status;
 
-            bool outgoingVideo = false, incomingVideo = false;
-            lines[i]["outgoingVideo"].asBool(outgoingVideo);
-            lines[i]["incomingVideo"].asBool(incomingVideo);
-            if (outgoingVideo || incomingVideo)
-                withVideo = true;
-        }
+        bool outgoingVideo = false, incomingVideo = false;
+        lines[i]["outgoingVideo"].asBool(outgoingVideo);
+        lines[i]["incomingVideo"].asBool(incomingVideo);
+        line.video = line.video || outgoingVideo || incomingVideo;
+
+        reported.push_back(line);
     }
 
-    if (!sawCarrier)
-        self->mCarrierStatus = eCallStatus_Disconnected;
-    if (!sawVoip)
-        self->mVoipStatus = eCallStatus_Disconnected;
-    self->mCallWithVideo = withVideo;
-
+    /* An empty "lines" is "no calls", from the phone app's TouchPad days on;
+     * CallState takes it per sender like any other update. */
+    self->mCallState.report(reporter ? reporter : "", reported);
     self->applyCallStatus();
 
     replySuccess(sh, message);

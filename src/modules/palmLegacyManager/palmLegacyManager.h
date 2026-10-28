@@ -29,6 +29,7 @@
 #include "audioMixer.h"
 #include "moduleFactory.h"
 #include "moduleManager.h"
+#include "callState.h"
 
 /*
  * palmLegacyManager -- serves the Palm-era com.palm.audio API on top of audiod.
@@ -71,30 +72,6 @@
 class PalmLegacyManager : public ModuleInterface
 {
     public:
-        /* Which transport a call is running over. Carrier calls route through
-         * the modem's own voice path, VoIP calls stay on the normal PCM path,
-         * so the two need different hardware routing. */
-        enum ECallMode
-        {
-            eCallMode_None = 0,
-            eCallMode_Carrier,
-            eCallMode_Voip
-        };
-
-        /* The call states com.palm.app.phone reports per line in
-         * phone/CallStatusUpdate. Mirrors audiod-pro's own ECallStatus so the
-         * Gen 2 handling could be carried over unchanged. */
-        enum ECallStatus
-        {
-            eCallStatus_NoCall = 0,
-            eCallStatus_Incoming,
-            eCallStatus_Dialing,
-            eCallStatus_Connecting,
-            eCallStatus_Active,
-            eCallStatus_OnHold,
-            eCallStatus_Disconnected
-        };
-
         /* Where audio should come out for a routable category. Named after the
          * Palm scenarios the phone app selects (phone_front_speaker & co). */
         enum EPhoneRoute
@@ -149,7 +126,7 @@ class PalmLegacyManager : public ModuleInterface
         LSHandle *mPalmHandle;      /* com.palm.audio */
         LSHandle *mPortsHandle;     /* org.webosports.service.audio */
 
-        /* Call state. mCallMode is what the phone app told us; mAppliedCallMode
+        /* Call state. mCallMode is what the reported calls need; mAppliedCallMode
          * and mAppliedRoute are what was last pushed to the hardware. Keeping
          * them separate is what makes the disconnect path safe to re-apply, and
          * what makes a mid-call speakerphone toggle actually take effect --
@@ -157,9 +134,8 @@ class PalmLegacyManager : public ModuleInterface
         ECallMode mCallMode;
         ECallMode mAppliedCallMode;
         EPhoneRoute mAppliedRoute;
-        ECallStatus mCarrierStatus;
-        ECallStatus mVoipStatus;
-        bool mCallWithVideo;
+        /* Who has reported which calls; mCallMode follows from it. */
+        CallState mCallState;
 
         bool mPhoneMuted;
         bool mMicMuted;
