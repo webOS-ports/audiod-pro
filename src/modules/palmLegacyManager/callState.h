@@ -96,6 +96,7 @@ public:
         bool pauseMedia;    //!< the first call started
         bool resumeMedia;   //!< the last call ended
         bool resetSpeaker;  //!< the last call ended: the next starts on the earpiece
+        bool resetMute;     //!< the last call ended: the mic is live again
     };
     static Transition transition(ECallMode from, ECallMode to);
 

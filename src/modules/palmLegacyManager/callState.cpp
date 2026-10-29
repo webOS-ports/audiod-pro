@@ -96,5 +96,6 @@ CallState::Transition CallState::transition(ECallMode from, ECallMode to)
     t.pauseMedia = (from == eCallMode_None && to != eCallMode_None);
     t.resumeMedia = (from != eCallMode_None && to == eCallMode_None);
     t.resetSpeaker = t.resumeMedia;
+    t.resetMute = t.resumeMedia;
     return t;
 }

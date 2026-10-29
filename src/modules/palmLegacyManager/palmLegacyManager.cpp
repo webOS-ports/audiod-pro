@@ -1552,6 +1552,16 @@ void PalmLegacyManager::applyCallStatus()
             phone->route = ePhoneRoute_Earpiece;
     }
 
+    /* Mute belongs to the call too. A call hung up while muted left the
+     * handset mic muted, so every recording and VoIP call after it was
+     * silent. Cleared before the routing below, whose source walk then
+     * unmutes the capture path. */
+    if (change.resetMute)
+    {
+        mMicMuted = false;
+        mPhoneMuted = false;
+    }
+
     /* Deliberately called on the disconnect path too -- see updateCallMode(). */
     updateCallMode();
 
