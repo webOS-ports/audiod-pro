@@ -1361,8 +1361,8 @@ void PalmLegacyManager::setJackState(EJackState state)
      * headset, the one connected last. The jack is a port of pcm_output, so
      * PulseAudio has no sink of its own to announce for it: tell the router
      * here. It answers at once with the output now in use (handleEvent ->
-     * setActiveOutput), so on an unplug mBtAudioSink below already says
-     * whether a Bluetooth headset took the audio over, and a video call
+     * setActiveOutput), so on an unplug mBtAudioSink and mUsbAudioSink
+     * below already say whether a headset took the audio over, and a video call
      * re-routed from there (followVideo) sees that headset rather than
      * none and stays off the loudspeaker. Told directly rather
      * than through a module event: the master volume manager would take
@@ -1379,7 +1379,8 @@ void PalmLegacyManager::setJackState(EJackState state)
     if (wasPlugged && !jackPlugged())
     {
         const CallState::Unplug unplug = CallState::unplugged(mCallMode,
-            !mBtAudioSink.empty() || !mUsbAudioSink.empty());
+            CallState::privateOutput(mBtAudioSink, false) ||
+            CallState::privateOutput(mUsbAudioSink, false));
         if (unplug.pauseMedia)
             pauseMedia(false);
         if (unplug.keepPausedAfterCall)
@@ -1466,22 +1467,22 @@ void PalmLegacyManager::setActiveOutput(const std::string &sinkName)
 
     PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
         "Bluetooth audio ended, output is now %s", sinkName.c_str());
-    mBtAudioSink.clear();
-    mBtAudioName.clear();
 
     /* Same as pulling the headphone plug: the headset going away (switched
      * off, out of range) would otherwise drop the music onto the speaker.
      * With headphones in, the music moved to them - because they were
      * plugged in after the headset connected, or because the headset went
      * and they are what is left - and goes on there. A USB headset taking
-     * over keeps it private as well. */
-    if (!jackPlugged() && !CallState::isUsbOutput(sinkName))
-    {
-        if (mCallMode == eCallMode_None)
-            pauseMedia(false);
-        else
-            mResumeMediaAfterCall = false;
-    }
+     * over keeps it private as well. The same rule as a USB headset's
+     * (followUsbOutput) and the jack's (setJackState). */
+    const CallState::Unplug unplug = CallState::outputMoved(mCallMode, mBtAudioSink,
+                                                            sinkName, jackPlugged());
+    mBtAudioSink.clear();
+    mBtAudioName.clear();
+    if (unplug.pauseMedia)
+        pauseMedia(false);
+    if (unplug.keepPausedAfterCall)
+        mResumeMediaAfterCall = false;
 
     /* ... and leaving puts a video call back on the loudspeaker. */
     if (mCallMode != eCallMode_None)
