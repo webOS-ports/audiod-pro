@@ -155,6 +155,7 @@ SET (modules_files
         src/modules/audioRouter/deviceRoutingConfigParser.cpp
         src/modules/audioRouter/audioRouter.cpp
         src/modules/audioRouter/outputChoice.cpp
+        src/modules/audioRouter/classRoute.cpp
         src/modules/trackManager/trackManager.cpp
         src/modules/deviceManager/deviceConfigReader.cpp
         src/modules/audioEffectManager/audioEffectManager.cpp

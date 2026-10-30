@@ -146,12 +146,48 @@ void AudioRouter::routeToChosen()
         if (!activeDevice.empty())
         {
             std::string outputDevice = getActualOutputDevice(activeDevice);
-            if (mObjAudioMixer->setSoundOutputOnRange(sinkInfo.startSink, sinkInfo.endSink, outputDevice.c_str()))
+            if (routeRange(sinkInfo, outputDevice))
                 updateDeviceStatus(it.first, activeDevice, true, true, true);
         }
         else
             mObjAudioMixer->setDefaultSinkRouting(sinkInfo.startSink, sinkInfo.endSink);
     }
+}
+
+/* The display's classes to outputDevice, except those an override sends
+ * elsewhere while outputDevice is in use. True when the classes that go to
+ * outputDevice were routed there: an override's sink failing to take its
+ * classes (it went away) leaves them where they were, not the output. */
+bool AudioRouter::routeRange(const utils::SINK_ROUTING_INFO_T &sinkInfo, const std::string &outputDevice)
+{
+    if (nullptr == mObjAudioMixer)
+        return false;
+    bool routed = true;
+    for (const ClassRoute::Range &run : ClassRoute::split(sinkInfo.startSink, sinkInfo.endSink,
+                                                          outputDevice, mClassOverride))
+    {
+        const bool ok = mObjAudioMixer->setSoundOutputOnRange(EVirtualAudioSink(run.start),
+                                                              EVirtualAudioSink(run.end), run.sink.c_str());
+        if (run.sink == outputDevice)
+            routed = routed && ok;
+        else
+            PM_LOG_INFO(MSGID_AUDIOROUTER, INIT_KVCOUNT,
+                "classes %d..%d to %s instead of %s: %s", run.start, run.end, run.sink.c_str(),
+                outputDevice.c_str(), ok ? "routed" : "failed");
+    }
+    return routed;
+}
+
+void AudioRouter::setClassOverride(const ClassRoute::Override &override)
+{
+    if (override == mClassOverride)
+        return;
+    PM_LOG_INFO(MSGID_AUDIOROUTER, INIT_KVCOUNT,
+        "class override: %zu classes to %s while %s is in use", override.classes.size(),
+        override.target.empty() ? "(none)" : override.target.c_str(),
+        override.whileOutput.empty() ? "(none)" : override.whileOutput.c_str());
+    mClassOverride = override;
+    routeToChosen();
 }
 
 void AudioRouter::eventDeviceConnectionStatus(const std::string &deviceName , const std::string &deviceNameDetail, const std::string &deviceIcon,\
@@ -549,7 +585,7 @@ void AudioRouter::setOutputDeviceRouting(const std::string &deviceName, const in
                 PM_LOG_INFO(MSGID_AUDIOROUTER, INIT_KVCOUNT,\
                     "setOutputDeviceRouting deviceName:%s priority:%d display:%s mixerType:%d",\
                     outputDevice.c_str(), priority, it.first.c_str(), (int)mixerType);
-                if (mObjAudioMixer->setSoundOutputOnRange(sinkInfo.startSink, sinkInfo.endSink, outputDevice.c_str()))
+                if (routeRange(sinkInfo, outputDevice))
                 {
                     setStatus = true;
                 }
