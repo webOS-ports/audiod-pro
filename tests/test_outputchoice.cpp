@@ -38,7 +38,7 @@ public:
     void connect(const std::string &name)
     {
         OutputChoice::Output &o = find(name);
-        o.connectedAt = mOrder.stamp(o.connected, o.connectedAt);
+        o.connectedAt = mOrder.stamp(o.connectedAt);
         o.connected = true;
     }
 
@@ -47,6 +47,14 @@ public:
         OutputChoice::Output &o = find(name);
         o.connected = false;
         o.connectedAt = 0;
+    }
+
+    // PulseAudio went away: the router marks every output disconnected
+    // (AudioRouter::eventMixerStatus), and keeps their connect stamps.
+    void losePulseAudio()
+    {
+        for (auto &o : mOutputs)
+            o.connected = false;
     }
 
     std::string chosen() const { return OutputChoice::choose(mOutputs); }
@@ -195,12 +203,60 @@ TEST(OutputChoice, WithoutRemovableOnesTheBestPriorityWins)
 TEST(OutputChoice, StampsOnlyGoUp)
 {
     OutputChoice::ConnectOrder order;
-    const std::uint64_t first = order.stamp(false, 0);
-    const std::uint64_t second = order.stamp(false, 0);
+    const std::uint64_t first = order.stamp(0);
+    const std::uint64_t second = order.stamp(0);
     EXPECT_GT(second, first);
-    EXPECT_EQ(order.stamp(true, first), first);
-    // Connected but never stamped: gets a stamp.
-    EXPECT_GT(order.stamp(true, 0), second);
+    EXPECT_EQ(order.stamp(first), first);
+    // Never stamped, or the stamp dropped by a disconnect: a new one.
+    EXPECT_GT(order.stamp(0), second);
+}
+
+TEST(OutputChoice, APulseAudioRestartKeepsTheOrder)
+{
+    // Headphones plugged in after the Bluetooth headset have the audio.
+    // PulseAudio restarts: pcm_output is announced again first, the jack
+    // is told again, and the headset's sink comes back last, once its
+    // module is loaded again. The headphones keep the audio.
+    Phone phone;
+    phone.connect("pcm_output");
+    phone.connect("bluetooth_speaker0");
+    phone.connect("pcm_headphone");
+    phone.losePulseAudio();
+    EXPECT_EQ(phone.chosen(), "");
+    phone.connect("pcm_output");
+    phone.connect("pcm_headphone");
+    phone.connect("bluetooth_speaker0");
+    EXPECT_EQ(phone.chosen(), "pcm_headphone");
+
+    // The other way round too: the headset connected last keeps it, even
+    // with the jack told again before the headset's sink is back.
+    Phone other;
+    other.connect("pcm_output");
+    other.connect("pcm_headphone");
+    other.connect("usb_speaker0");
+    other.losePulseAudio();
+    other.connect("pcm_headphone");
+    other.connect("pcm_output");
+    other.connect("usb_speaker0");
+    EXPECT_EQ(other.chosen(), "usb_speaker0");
+}
+
+TEST(OutputChoice, AHeadsetDisconnectedDuringARestartIsNewWhenItComesBack)
+{
+    // The Bluetooth headset goes while PulseAudio is away (BluetoothManager
+    // tells the router, which drops its stamp) and is connected again after
+    // the headphones are back: it was connected last, so it has the audio.
+    Phone phone;
+    phone.connect("pcm_output");
+    phone.connect("bluetooth_speaker0");
+    phone.connect("pcm_headphone");
+    phone.losePulseAudio();
+    phone.disconnect("bluetooth_speaker0");
+    phone.connect("pcm_output");
+    phone.connect("pcm_headphone");
+    EXPECT_EQ(phone.chosen(), "pcm_headphone");
+    phone.connect("bluetooth_speaker0");
+    EXPECT_EQ(phone.chosen(), "bluetooth_speaker0");
 }
 
 // With the headset connected last carrying the audio, a video call (test

@@ -35,10 +35,13 @@
  * connected output with the best (lowest) priority number has it, which is
  * how audiod chose every output before.
  *
- * "Connected last" is a stamp taken when an output goes from disconnected
- * to connected. An output reported connected again while it already is -
- * PulseAudio restarting announces every sink anew - keeps its stamp, so a
- * restart does not reorder anything.
+ * "Connected last" is a stamp taken when an output is connected, and
+ * dropped only when it is really disconnected: the router clears it then.
+ * An output reported connected again keeps its stamp, whether it was still
+ * marked connected or was marked disconnected because PulseAudio went away
+ * - PulseAudio restarting announces every sink anew, in an order of its
+ * own, and a Bluetooth headset only after its module is loaded again - so
+ * a restart does not reorder anything.
  */
 namespace OutputChoice
 {
@@ -60,9 +63,10 @@ namespace OutputChoice
     class ConnectOrder
     {
     public:
-        //! The stamp an output gets when it goes from disconnected to
-        //! connected; wasConnected true keeps the stamp it has.
-        std::uint64_t stamp(bool wasConnected, std::uint64_t current);
+        //! The stamp an output gets when it is reported connected: the one
+        //! it has (current), or a new one when it has none - it was never
+        //! connected, or was really disconnected since (stamp 0).
+        std::uint64_t stamp(std::uint64_t current);
 
     private:
         std::uint64_t mLast = 0;
