@@ -16,6 +16,7 @@
 
 #include "OSEMasterVolumeManager.h"
 #include "volumeTarget.h"
+#include "palmLegacyManager.h"
 
 #define GETSETTINGS "luna://com.webos.service.settings/getSystemSettings"
 #define SETSETTINGS "luna://com.webos.service.settings/setSystemSettings"
@@ -439,11 +440,23 @@ std::string OSEMasterVolumeManager::getMappedName (std::string deviceName)
 
 std::string OSEMasterVolumeManager::volumeTargetOf(const std::string &soundOutput)
 {
+    const PalmLegacyManager *legacy = PalmLegacyManager::getPalmLegacyManagerInstance();
+    const std::string btSink = legacy ? legacy->bluetoothAudioSink() : std::string();
+
+    /* The headset carries the audio: make sure this side knows it, as it
+     * does not when the headset was connected before audiod started. */
+    if (!btSink.empty())
+    {
+        mBluetoothName = btSink;
+        setConnStatus(VolumeTarget::kBluetoothOutput, DISPLAY_ONE, true, true);
+    }
+
     const std::string target = VolumeTarget::output(soundOutput, getActiveDevice(DISPLAY_ONE, true),
-                                                    getConnStatus(soundOutput, DISPLAY_ONE, true));
+                                                    getConnStatus(soundOutput, DISPLAY_ONE, true),
+                                                    !btSink.empty());
     if (target != soundOutput)
         PM_LOG_INFO(MSGID_CLIENT_MASTER_VOLUME_MANAGER, INIT_KVCOUNT,
-            "volume for %s goes to %s, the active output", soundOutput.c_str(), target.c_str());
+            "volume for %s goes to %s, which carries the audio", soundOutput.c_str(), target.c_str());
     return target;
 }
 

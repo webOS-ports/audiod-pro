@@ -22,19 +22,27 @@ namespace
     const char kBuiltInOutput[] = "pcm_output";
 }
 
+const char VolumeTarget::kBluetoothOutput[] = "bluetooth_speaker0";
+
 bool VolumeTarget::isBluetoothOutput(const std::string &name)
 {
     return name.compare(0, 9, "bluetooth") == 0;
 }
 
 std::string VolumeTarget::output(const std::string &requested, const std::string &active,
-                                 bool requestedConnected)
+                                 bool requestedConnected, bool bluetoothAudio)
 {
-    if (requested == kBuiltInOutput && isBluetoothOutput(active))
-        return active;
+    if (requested == kBuiltInOutput)
+    {
+        if (bluetoothAudio)
+            return kBluetoothOutput;
+        if (isBluetoothOutput(active))
+            return active;
+        return requested;
+    }
 
-    if (isBluetoothOutput(requested) && !requestedConnected && !active.empty())
-        return active;
+    if (isBluetoothOutput(requested) && !requestedConnected && !bluetoothAudio)
+        return active.empty() ? std::string(kBuiltInOutput) : active;
 
     return requested;
 }

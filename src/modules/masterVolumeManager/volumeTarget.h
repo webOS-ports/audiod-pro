@@ -29,16 +29,26 @@
  * nothing anyone could hear. The other way round, a client still naming the
  * headset after it went - the shell follows the outputs getVolume reports -
  * gets the output that is active now instead of an error.
+ *
+ * Whether the headset carries the audio is what the legacy manager routes
+ * by, not only the master volume manager's own active flag: that one is
+ * missed when the headset was connected before audiod started, which left
+ * the volume on pcm_output. With a wired headset in as well, Bluetooth still
+ * has the music, so it has the volume too.
  */
 namespace VolumeTarget
 {
     //! Whether name is one of the Bluetooth outputs (bluetooth_speaker0, ...).
     bool isBluetoothOutput(const std::string &name);
 
+    //! The Bluetooth output's name; audiod has one for whichever headset.
+    extern const char kBluetoothOutput[];
+
     //! The output a request for requested moves, with active the display's
-    //! active output and requestedConnected whether requested is connected.
+    //! active output, requestedConnected whether requested is connected and
+    //! bluetoothAudio whether a Bluetooth headset carries the audio.
     std::string output(const std::string &requested, const std::string &active,
-                       bool requestedConnected);
+                       bool requestedConnected, bool bluetoothAudio);
 }
 
 #endif // _VOLUME_TARGET_H

@@ -307,6 +307,10 @@ class PalmLegacyManager : public ModuleInterface
         static PalmLegacyManager* getPalmLegacyManagerInstance();
         static PalmLegacyManager* mPalmLegacyManager;
 
+        /* The A2DP sink carrying the audio, "" when no Bluetooth headset
+         * does. The master volume follows it there. */
+        const std::string &bluetoothAudioSink() const { return mBtAudioSink; }
+
         static ModuleInterface* CreateObject(ModuleConfig* const pConfObj)
         {
             if (mIsObjRegistered)
