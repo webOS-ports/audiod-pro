@@ -90,6 +90,7 @@ include_directories(${Boost_INCLUDE_DIRS})
 
 include_directories(src)
 include_directories(src/modules/audioPolicyManager)
+include_directories(src/modules/audioRouter)
 include_directories(src/modules/bluetoothManager)
 include_directories(src/modules/connectionManager)
 include_directories(src/modules/masterVolumeManager)
@@ -147,6 +148,7 @@ SET (modules_files
         src/modules/playbackManager/playbackManager.cpp
         src/modules/audioRouter/deviceRoutingConfigParser.cpp
         src/modules/audioRouter/audioRouter.cpp
+        src/modules/audioRouter/outputChoice.cpp
         src/modules/trackManager/trackManager.cpp
         src/modules/deviceManager/deviceConfigReader.cpp
         src/modules/audioEffectManager/audioEffectManager.cpp

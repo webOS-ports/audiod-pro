@@ -1,0 +1,282 @@
+// Copyright (c) 2026 Herman van Hazendonk <github.com@herrie.org>
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+// SPDX-License-Identifier: Apache-2.0
+
+#include <gtest/gtest.h>
+
+#include "outputChoice.h"
+#include "videoSpeaker.h"
+
+namespace
+{
+
+// The phone's outputs as audiod_device_routing_config.json lists them, and
+// the router's bookkeeping when one connects or goes.
+class Phone
+{
+public:
+    Phone()
+    {
+        add("pcm_output", 4, false);
+        add("pcm_headphone", 3, true);
+        add("bluetooth_speaker0", 1, true);
+        add("usb_speaker0", 2, true);
+    }
+
+    void connect(const std::string &name)
+    {
+        OutputChoice::Output &o = find(name);
+        o.connectedAt = mOrder.stamp(o.connected, o.connectedAt);
+        o.connected = true;
+    }
+
+    void disconnect(const std::string &name)
+    {
+        OutputChoice::Output &o = find(name);
+        o.connected = false;
+        o.connectedAt = 0;
+    }
+
+    std::string chosen() const { return OutputChoice::choose(mOutputs); }
+
+private:
+    void add(const std::string &name, int priority, bool removable)
+    {
+        OutputChoice::Output o;
+        o.name = name;
+        o.priority = priority;
+        o.removable = removable;
+        mOutputs.push_back(o);
+    }
+
+    OutputChoice::Output &find(const std::string &name)
+    {
+        for (auto &o : mOutputs)
+            if (o.name == name)
+                return o;
+        ADD_FAILURE() << "no output " << name;
+        return mOutputs.front();
+    }
+
+    std::vector<OutputChoice::Output> mOutputs;
+    OutputChoice::ConnectOrder mOrder;
+};
+
+}
+
+TEST(OutputChoice, NothingConnectedIsNoOutput)
+{
+    Phone phone;
+    EXPECT_EQ(phone.chosen(), "");
+}
+
+TEST(OutputChoice, TheSpeakerAloneHasTheAudio)
+{
+    Phone phone;
+    phone.connect("pcm_output");
+    EXPECT_EQ(phone.chosen(), "pcm_output");
+}
+
+TEST(OutputChoice, HeadphonesPluggedInWhileBluetoothPlaysTakeTheAudio)
+{
+    // B08, seen on mindphone 30 Oct: nuraphone playing, jack plugged in,
+    // the music stayed on Bluetooth.
+    Phone phone;
+    phone.connect("pcm_output");
+    phone.connect("bluetooth_speaker0");
+    EXPECT_EQ(phone.chosen(), "bluetooth_speaker0");
+    phone.connect("pcm_headphone");
+    EXPECT_EQ(phone.chosen(), "pcm_headphone");
+}
+
+TEST(OutputChoice, BluetoothConnectedWithHeadphonesInTakesTheAudio)
+{
+    Phone phone;
+    phone.connect("pcm_output");
+    phone.connect("pcm_headphone");
+    phone.connect("bluetooth_speaker0");
+    EXPECT_EQ(phone.chosen(), "bluetooth_speaker0");
+}
+
+TEST(OutputChoice, TheOneInUseGoingFallsBackToTheOneConnectedBefore)
+{
+    Phone phone;
+    phone.connect("pcm_output");
+    phone.connect("bluetooth_speaker0");
+    phone.connect("pcm_headphone");
+    phone.disconnect("pcm_headphone");
+    EXPECT_EQ(phone.chosen(), "bluetooth_speaker0");
+
+    phone.connect("pcm_headphone");
+    phone.disconnect("bluetooth_speaker0");
+    EXPECT_EQ(phone.chosen(), "pcm_headphone");
+}
+
+TEST(OutputChoice, RemovingOneNotInUseChangesNothing)
+{
+    Phone phone;
+    phone.connect("pcm_output");
+    phone.connect("pcm_headphone");
+    phone.connect("bluetooth_speaker0");
+    phone.disconnect("pcm_headphone");
+    EXPECT_EQ(phone.chosen(), "bluetooth_speaker0");
+}
+
+TEST(OutputChoice, WithEveryRemovableOneGoneTheSpeakerHasIt)
+{
+    Phone phone;
+    phone.connect("pcm_output");
+    phone.connect("pcm_headphone");
+    phone.connect("bluetooth_speaker0");
+    phone.disconnect("bluetooth_speaker0");
+    phone.disconnect("pcm_headphone");
+    EXPECT_EQ(phone.chosen(), "pcm_output");
+}
+
+TEST(OutputChoice, AReconnectMakesItTheLatestAgain)
+{
+    Phone phone;
+    phone.connect("pcm_output");
+    phone.connect("bluetooth_speaker0");
+    phone.connect("pcm_headphone");
+    phone.disconnect("bluetooth_speaker0");
+    phone.connect("bluetooth_speaker0");
+    EXPECT_EQ(phone.chosen(), "bluetooth_speaker0");
+}
+
+TEST(OutputChoice, ReportedAgainWhileConnectedKeepsItsPlace)
+{
+    // PulseAudio restarting announces every sink again; the Bluetooth sink
+    // coming back must not take the audio from headphones plugged in later.
+    Phone phone;
+    phone.connect("pcm_output");
+    phone.connect("bluetooth_speaker0");
+    phone.connect("pcm_headphone");
+    phone.connect("pcm_output");
+    phone.connect("bluetooth_speaker0");
+    EXPECT_EQ(phone.chosen(), "pcm_headphone");
+}
+
+TEST(OutputChoice, AUsbHeadsetIsRemovableToo)
+{
+    Phone phone;
+    phone.connect("pcm_output");
+    phone.connect("pcm_headphone");
+    phone.connect("usb_speaker0");
+    EXPECT_EQ(phone.chosen(), "usb_speaker0");
+}
+
+TEST(OutputChoice, WithoutRemovableOnesTheBestPriorityWins)
+{
+    std::vector<OutputChoice::Output> outputs(2);
+    outputs[0].name = "pcm_output";
+    outputs[0].priority = 4;
+    outputs[0].connected = true;
+    outputs[1].name = "pcm_hdmi";
+    outputs[1].priority = 2;
+    outputs[1].connected = true;
+    EXPECT_EQ(OutputChoice::choose(outputs), "pcm_hdmi");
+    outputs[1].connected = false;
+    EXPECT_EQ(OutputChoice::choose(outputs), "pcm_output");
+}
+
+TEST(OutputChoice, StampsOnlyGoUp)
+{
+    OutputChoice::ConnectOrder order;
+    const std::uint64_t first = order.stamp(false, 0);
+    const std::uint64_t second = order.stamp(false, 0);
+    EXPECT_GT(second, first);
+    EXPECT_EQ(order.stamp(true, first), first);
+    // Connected but never stamped: gets a stamp.
+    EXPECT_GT(order.stamp(true, 0), second);
+}
+
+// With the headset connected last carrying the audio, a video call (test
+// plan E04, VideoSpeaker) must still see a headset whenever one is there.
+// The legacy manager counts the jack, or Bluetooth while it carries the
+// audio, and tells the router about the jack before it re-routes the call,
+// so the router's choice afterwards is what VideoSpeaker is given.
+namespace
+{
+
+struct VideoCallOnPhone
+{
+    Phone phone;
+    bool jack = false;
+    VideoSpeaker policy;
+    bool speaker = false;
+
+    VideoSpeaker::Move route()
+    {
+        const bool headset = jack || phone.chosen() == "bluetooth_speaker0";
+        const VideoSpeaker::Move move = policy.update({true, !speaker, speaker, headset, false});
+        if (move == VideoSpeaker::eMove_Speaker)
+            speaker = true;
+        else if (move == VideoSpeaker::eMove_Earpiece)
+            speaker = false;
+        return move;
+    }
+
+    void plug(bool in)
+    {
+        jack = in;
+        if (in)
+            phone.connect("pcm_headphone");
+        else
+            phone.disconnect("pcm_headphone");
+    }
+};
+
+}
+
+TEST(OutputChoice, AVideoCallStaysInTheHeadsetsWhicheverWasConnectedLast)
+{
+    VideoCallOnPhone call;
+    call.phone.connect("pcm_output");
+    call.phone.connect("bluetooth_speaker0");
+    EXPECT_EQ(call.route(), VideoSpeaker::eMove_None);
+
+    // Headphones in after the Bluetooth headset: they have the audio now,
+    // and the call is still in a headset.
+    call.plug(true);
+    EXPECT_EQ(call.phone.chosen(), "pcm_headphone");
+    EXPECT_EQ(call.route(), VideoSpeaker::eMove_None);
+
+    // Out again: the Bluetooth headset takes over, no loudspeaker.
+    call.plug(false);
+    EXPECT_EQ(call.phone.chosen(), "bluetooth_speaker0");
+    EXPECT_EQ(call.route(), VideoSpeaker::eMove_None);
+    EXPECT_FALSE(call.speaker);
+
+    // Bluetooth gone as well: now it is the loudspeaker.
+    call.phone.disconnect("bluetooth_speaker0");
+    EXPECT_EQ(call.route(), VideoSpeaker::eMove_Speaker);
+    EXPECT_TRUE(call.speaker);
+}
+
+TEST(OutputChoice, AHeadsetArrivingInAVideoCallTakesItOffTheLoudspeaker)
+{
+    VideoCallOnPhone call;
+    call.phone.connect("pcm_output");
+    EXPECT_EQ(call.route(), VideoSpeaker::eMove_Speaker);
+
+    call.plug(true);
+    EXPECT_EQ(call.route(), VideoSpeaker::eMove_Earpiece);
+
+    // Bluetooth connected after the headphones: still a headset.
+    call.phone.connect("bluetooth_speaker0");
+    EXPECT_EQ(call.route(), VideoSpeaker::eMove_None);
+    EXPECT_FALSE(call.speaker);
+}
