@@ -37,11 +37,16 @@ void AudioRouter::eventMixerStatus(bool mixerStatus, utils::EMIXER_TYPE mixerTyp
     {
         /* The sinks went with PulseAudio and are announced again by the
          * next one. connectedAt stays: the order the outputs were
-         * connected in is the user's, not PulseAudio's (outputChoice.h). */
+         * connected in is the user's, not PulseAudio's (outputChoice.h).
+         * The removable ones connected now are awaited: the audio waits
+         * for them rather than going to the loudspeaker meanwhile. */
+        stopAwaitTimer();
         for (auto& it : mSoundOutputInfo)
         {
             for (auto& deviceInfo : it.second)
             {
+                deviceInfo.awaited = (deviceInfo.isConnected || deviceInfo.awaited) &&
+                                     deviceInfo.removable && deviceInfo.connectedAt != 0;
                 deviceInfo.isConnected = false;
                 deviceInfo.activeStatus = false;
             }
@@ -57,6 +62,15 @@ void AudioRouter::eventMixerStatus(bool mixerStatus, utils::EMIXER_TYPE mixerTyp
     }
     else if (utils::ePulseMixer == mixerType)
     {
+        /* Outputs that are not back by then are not waited for any more. */
+        bool awaiting = false;
+        for (const auto& it : mSoundOutputInfo)
+            for (const auto& deviceInfo : it.second)
+                awaiting = awaiting || deviceInfo.awaited;
+        stopAwaitTimer();
+        if (awaiting)
+            mAwaitTimer = g_timeout_add_seconds(AWAIT_LOST_OUTPUTS_SECONDS, &AudioRouter::awaitTimedOut, this);
+
         if (nullptr != mObjAudioMixer)
         {
             for (auto& it : mMutipleOutputInfo)
@@ -76,6 +90,67 @@ void AudioRouter::eventMixerStatus(bool mixerStatus, utils::EMIXER_TYPE mixerTyp
                 }
             }
         }
+    }
+}
+
+void AudioRouter::stopAwaitTimer()
+{
+    if (mAwaitTimer)
+    {
+        g_source_remove(mAwaitTimer);
+        mAwaitTimer = 0;
+    }
+}
+
+gboolean AudioRouter::awaitTimedOut(gpointer data)
+{
+    AudioRouter *self = static_cast<AudioRouter*>(data);
+    self->mAwaitTimer = 0;
+    bool dropped = false;
+    for (auto &it : self->mSoundOutputInfo)
+    {
+        for (auto &deviceInfo : it.second)
+        {
+            if (!deviceInfo.awaited)
+                continue;
+            PM_LOG_WARNING(MSGID_AUDIOROUTER, INIT_KVCOUNT,
+                "%s was not announced again after PulseAudio came back; not waiting for it",
+                deviceInfo.deviceName.c_str());
+            deviceInfo.awaited = false;
+            deviceInfo.connectedAt = 0;
+            dropped = true;
+        }
+    }
+    if (dropped)
+        self->routeToChosen();
+    return G_SOURCE_REMOVE;
+}
+
+void AudioRouter::routeToChosen()
+{
+    if (nullptr == mObjAudioMixer)
+        return;
+    for (const auto &it : mSoundOutputInfo)
+    {
+        const std::vector<OutputChoice::Output> outputs = outputsOf(it.first);
+        if (OutputChoice::waiting(outputs))
+        {
+            PM_LOG_INFO(MSGID_AUDIOROUTER, INIT_KVCOUNT,
+                "display %s waits for an output lost with PulseAudio", it.first.c_str());
+            continue;
+        }
+        const std::string activeDevice = OutputChoice::choose(outputs);
+        utils::SINK_ROUTING_INFO_T sinkInfo = getSinkRoutingInfo(it.first);
+        PM_LOG_INFO(MSGID_AUDIOROUTER, INIT_KVCOUNT,
+            "routeToChosen display:%s output:%s", it.first.c_str(), activeDevice.c_str());
+        if (!activeDevice.empty())
+        {
+            std::string outputDevice = getActualOutputDevice(activeDevice);
+            if (mObjAudioMixer->setSoundOutputOnRange(sinkInfo.startSink, sinkInfo.endSink, outputDevice.c_str()))
+                updateDeviceStatus(it.first, activeDevice, true, true, true);
+        }
+        else
+            mObjAudioMixer->setDefaultSinkRouting(sinkInfo.startSink, sinkInfo.endSink);
     }
 }
 
@@ -428,6 +503,7 @@ bool AudioRouter::markOutputConnected(const std::string& display, const std::str
             const bool wasConnected = deviceInfo.isConnected;
             deviceInfo.connectedAt = mOutputConnectOrder.stamp(deviceInfo.connectedAt);
             deviceInfo.isConnected = true;
+            deviceInfo.awaited = false;
             return wasConnected;
         }
     }
@@ -496,30 +572,17 @@ void AudioRouter::resetOutputDeviceRouting(const std::string &deviceName, const 
     auto outputs = mSoundOutputInfo.find(display);
     if (outputs != mSoundOutputInfo.end())
     {
+        /* Really gone: it loses its place, and is not waited for. */
         for (auto &deviceInfo : outputs->second)
             if (deviceName == deviceInfo.deviceName)
-                deviceInfo.connectedAt = 0;
-    }
-
-    if (nullptr != mObjAudioMixer)
-    {
-        for (const auto &it : mSoundOutputInfo)
-        {
-            std::string activeDevice = getPriorityDevice(it.first, true);
-            utils::SINK_ROUTING_INFO_T sinkInfo = getSinkRoutingInfo(it.first);
-            PM_LOG_INFO(MSGID_AUDIOROUTER, INIT_KVCOUNT,\
-                    "resetOutputDeviceRouting deviceName:%s priority:%d display:%s mixerType:%d",\
-                    activeDevice.c_str(), priority, it.first.c_str(), (int)mixerType);
-            if (!activeDevice.empty())
             {
-                std::string outputDevice = getActualOutputDevice(activeDevice);
-                if (mObjAudioMixer->setSoundOutputOnRange(sinkInfo.startSink, sinkInfo.endSink, outputDevice.c_str()))
-                    updateDeviceStatus(it.first, activeDevice, true, true, true);
+                deviceInfo.connectedAt = 0;
+                deviceInfo.awaited = false;
             }
-            else
-                mObjAudioMixer->setDefaultSinkRouting(sinkInfo.startSink, sinkInfo.endSink);
-        }
     }
+    PM_LOG_INFO(MSGID_AUDIOROUTER, INIT_KVCOUNT,\
+        "resetOutputDeviceRouting priority:%d mixerType:%d", priority, (int)mixerType);
+    routeToChosen();
 }
 
 void AudioRouter::setInputDeviceRouting(const std::string &deviceName, const int &priority,\
@@ -708,6 +771,7 @@ std::vector<OutputChoice::Output> AudioRouter::outputsOf(const std::string& disp
         output.connected = deviceInfo.isConnected;
         output.connectedAt = deviceInfo.connectedAt;
         output.sink = deviceInfo.sinkName;
+        output.awaited = deviceInfo.awaited;
         outputs.push_back(output);
     }
     return outputs;
@@ -1833,6 +1897,7 @@ AudioRouter::AudioRouter(ModuleConfig* const pConfObj):mObjModuleManager(nullptr
 AudioRouter::~AudioRouter()
 {
     PM_LOG_DEBUG("AudioRouter destructor");
+    stopAwaitTimer();
     if (mObjDeviceRoutingParser)
     {
         delete mObjDeviceRoutingParser;

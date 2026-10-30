@@ -56,6 +56,10 @@ namespace OutputChoice
         //! The sink it plays through when that is not one of its own name:
         //! on LuneOS the headphone jack is a port of pcm_output. "" if none.
         std::string sink;
+        //! Connected when PulseAudio went away, not announced again yet. A
+        //! Bluetooth headset's sink only comes back once its module is
+        //! loaded again, after pcm_output; see waiting().
+        bool awaited = false;
     };
 
     //! The output to use, or "" when none is connected.
@@ -69,6 +73,17 @@ namespace OutputChoice
      * headphones play through it, and PulseAudio could not route to it
      * while it was not there yet. */
     std::string routeOnAnnounce(const std::vector<Output> &outputs, const std::string &announced);
+
+    /* Whether the audio waits for an awaited output: one that was
+     * connected after the output choose() picks now (or any, when that is
+     * not removable), so it would have the audio again once it is back.
+     * Routing to pcm_output in the meantime would move the music, or a
+     * video call, from a Bluetooth headset to the loudspeaker for the
+     * moment PulseAudio takes to have the headset's sink again, and back.
+     * While waiting, routeOnAnnounce() routes nowhere; the router stops
+     * waiting for an output that is not back after a while (and drops its
+     * place, as for a disconnect). */
+    bool waiting(const std::vector<Output> &outputs);
 
     /* Hands out increasing connect stamps. 64 bits, so it does not wrap
      * on any target, armv7 included. */
