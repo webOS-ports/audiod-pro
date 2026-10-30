@@ -22,12 +22,16 @@
 # which output a volume request moves (volumeTarget), when an alert lowers
 # the music (duckPolicy), what a WAV file's header says about the sound
 # playSound plays (wavHeader), stopping on SIGTERM within a deadline
-# (shutdownGuard), which output the audio goes to (outputChoice), and
-# what is sent to PulseAudio again after it restarted: the cards
-# (cardTable) and the outputs' volumes and mutes (pulseReplay), and what a
-# message to module-palm-policy holds (pulseMessage).
+# (shutdownGuard), which output the audio goes to (outputChoice), what is
+# sent to PulseAudio again after it restarted: the cards (cardTable) and
+# the outputs' volumes and mutes (pulseReplay), and what a message to
+# module-palm-policy holds (pulseMessage), whether a call belongs on a
+# hands-free headset (btCall), and oFono's hands-free audio agent against
+# a private bus (hfpAgent).
 
 find_package(GTest REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(TEST_GIO REQUIRED gio-2.0 gio-unix-2.0)
 
 add_executable(audiod-tests
     ${CMAKE_SOURCE_DIR}/src/modules/bluetoothManager/btState.cpp
@@ -41,6 +45,8 @@ add_executable(audiod-tests
     ${CMAKE_SOURCE_DIR}/src/wavHeader.cpp
     ${CMAKE_SOURCE_DIR}/src/shutdownGuard.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/audioRouter/outputChoice.cpp
+    ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/btCall.cpp
+    ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/hfpAgent.cpp
     test_btstate.cpp
     test_callstate.cpp
     test_ringstate.cpp
@@ -53,7 +59,9 @@ add_executable(audiod-tests
     test_cardtable.cpp
     test_pulsereplay.cpp
     test_pulsemessage.cpp
-    test_outputchoice.cpp)
+    test_outputchoice.cpp
+    test_btcall.cpp
+    test_hfpagent.cpp)
 target_include_directories(audiod-tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src/modules/bluetoothManager
     ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager
@@ -61,7 +69,8 @@ target_include_directories(audiod-tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src/modules/audioPolicyManager
     ${CMAKE_SOURCE_DIR}/src/modules/deviceManager
     ${CMAKE_SOURCE_DIR}/src/modules/audioRouter
-    ${CMAKE_SOURCE_DIR}/include)
+    ${CMAKE_SOURCE_DIR}/include
+    ${TEST_GIO_INCLUDE_DIRS})
 target_compile_options(audiod-tests PRIVATE -Wall -Wextra)
-target_link_libraries(audiod-tests GTest::gtest GTest::gtest_main pthread)
+target_link_libraries(audiod-tests GTest::gtest GTest::gtest_main ${TEST_GIO_LDFLAGS} pthread)
 add_test(NAME audiod-tests COMMAND audiod-tests)

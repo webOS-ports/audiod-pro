@@ -32,6 +32,10 @@ pkg_check_modules(GLIB2 REQUIRED glib-2.0)
 include_directories(${GLIB2_INCLUDE_DIRS})
 webos_add_compiler_flags(ALL ${GLIB2_CFLAGS})
 
+# palmLegacyManager's hands-free audio agent talks to oFono over D-Bus.
+pkg_check_modules(GIO REQUIRED gio-2.0 gio-unix-2.0)
+include_directories(${GIO_INCLUDE_DIRS})
+
 pkg_check_modules(LIBPBNJSON REQUIRED pbnjson_cpp)
 include_directories(${LIBPBNJSON_INCLUDE_DIRS})
 webos_add_compiler_flags(ALL ${LIBPBNJSON_CFLAGS})
@@ -130,6 +134,8 @@ SET (modules_files
         src/modules/palmLegacyManager/ringState.cpp
         src/modules/palmLegacyManager/paReconnect.cpp
         src/modules/palmLegacyManager/videoSpeaker.cpp
+        src/modules/palmLegacyManager/btCall.cpp
+        src/modules/palmLegacyManager/hfpAgent.cpp
         src/modules/lunaEventSubscriber/lunaEventSubscriber.cpp
         src/modules/masterVolumeManager/OSEMasterVolumeManager.cpp
         src/modules/masterVolumeManager/volumeTarget.cpp
@@ -177,6 +183,7 @@ add_executable(audiod     ${utils_1_files}
             ${pmtrace_files})
 
 target_link_libraries(audiod     ${GLIB2_LDFLAGS}
+                ${GIO_LDFLAGS}
                 ${LUNASERVICE_LDFLAGS}
                 ${PBNJSON_C_LDFLAGS}
                 ${LUNAPREFS_LDFLAGS}
@@ -200,6 +207,7 @@ add_executable(audiod     ${utils_1_files}
             ${modules_files} )
 
 target_link_libraries(audiod     ${GLIB2_LDFLAGS}
+                ${GIO_LDFLAGS}
                 ${LUNASERVICE_LDFLAGS}
                 ${PBNJSON_C_LDFLAGS}
                 ${LUNAPREFS_LDFLAGS}
@@ -224,6 +232,10 @@ ENDIF()
 
 webos_build_system_bus_files()
 webos_build_daemon()
+
+# Lets audiod (user audio) be oFono's hands-free audio agent; ofono.conf
+# lets only root and the console talk to org.ofono.
+install(FILES files/dbus/audiod-ofono.conf DESTINATION ${WEBOS_INSTALL_SYSCONFDIR}/dbus-1/system.d)
 
 #-- install udev rule for headset detection
 install(FILES etc/udev/rules.d/86-audiod.rules DESTINATION ${WEBOS_INSTALL_WEBOS}/etc/udev/rules.d/)
