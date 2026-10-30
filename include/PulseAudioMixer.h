@@ -92,6 +92,7 @@ public:
     /// These should really be private, but they're needed for global callbacks...
     bool _connectSocket();
     void _pulseStatus(GIOChannel * ch, GIOCondition condition, gpointer user_data);
+    void _pulseGone(GIOChannel * ch);
     void _timer();
 
     GIOChannel* mChannel;
