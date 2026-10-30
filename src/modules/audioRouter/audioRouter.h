@@ -25,6 +25,7 @@
 #include "moduleManager.h"
 #include "deviceRoutingConfigParser.h"
 #include "outputChoice.h"
+#include "classRoute.h"
 
 #define DEFAULT_ONE_DISPLAY_ID 0
 #define DEFAULT_TWO_DISPLAY_ID 1
@@ -101,6 +102,9 @@ class AudioRouter : public ModuleInterface
          * announced again once it is back (OutputChoice::waiting()). */
         static constexpr guint AWAIT_LOST_OUTPUTS_SECONDS = 5;
         guint mAwaitTimer = 0;
+        /* Stream classes that go elsewhere than the rest of the display's
+         * while a given output is in use: see setClassOverride(). */
+        ClassRoute::Override mClassOverride;
         utils::mapSoundDevicesInfo mSoundOutputDeviceInfo;
         utils::mapSoundDevicesInfo mSoundInputDeviceInfo;
 
@@ -118,6 +122,7 @@ class AudioRouter : public ModuleInterface
             const std::string &display, utils::EMIXER_TYPE mixerType);
         bool markOutputConnected(const std::string& display, const std::string& deviceName);
         void routeToChosen();
+        bool routeRange(const utils::SINK_ROUTING_INFO_T &sinkInfo, const std::string &outputDevice);
         void stopAwaitTimer();
         static gboolean awaitTimedOut(gpointer data);
         void updateDeviceStatus(const std::string& display, const std::string& deviceName,\
@@ -158,6 +163,11 @@ class AudioRouter : public ModuleInterface
         std::string getSoundDeviceInfo(bool subscribed, const std::string &query);
 
         void notifyDeviceListSubscribers();
+
+        /* While override.whileOutput carries a display's audio, its
+         * override.classes go to override.target instead (an empty override
+         * ends that). Takes effect at once: the displays are routed again. */
+        void setClassOverride(const ClassRoute::Override &override);
 
         //luna api
         static bool _setSoundOutput(LSHandle *lshandle, LSMessage *message, void *ctx);
