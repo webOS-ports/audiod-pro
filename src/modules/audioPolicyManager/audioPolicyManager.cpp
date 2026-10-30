@@ -277,6 +277,7 @@ void AudioPolicyManager::readPolicyInfo()
             PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT, "loadVolumePolicyJsonConfig success");
             pbnjson::JValue policyInfo = mObjPolicyInfoParser->getVolumePolicyInfo(true);
             pbnjson::JValue policyInfoSources = mObjPolicyInfoParser->getVolumePolicyInfo(false);
+            readDuckDepth(mObjPolicyInfoParser->getSinkVolumePolicyConfig());
             if (mObjModuleManager)
             {
                 events::EVENT_SINK_POLICY_INFO_T eventSinkPolicyInfo;
@@ -1507,7 +1508,26 @@ int AudioPolicyManager::duckedVolume(EVirtualAudioSink audioSink, int volume)
 {
     if (!DuckPolicy::isDuckable(getStreamType(audioSink)))
         return volume;
-    return DuckPolicy::scaled(volume, mDuckPercent);
+    return DuckPolicy::duckedVolume(volume, mDuckLevel);
+}
+
+unsigned AudioPolicyManager::duckLeadInMs(const std::string &streamType) const
+{
+    return DuckPolicy::leadInMs(streamType, mRingerOn, mDuckLevel, mDuckDepth);
+}
+
+/* duckDb, at the top of the volume policy config: how many dB the music goes
+ * down under an alert, e.g. -12 as in webOS 2.x. Missing or not a number:
+ * DuckPolicy::kDefaultDuckDb. */
+void AudioPolicyManager::readDuckDepth(const pbnjson::JValue &config)
+{
+    double db = DuckPolicy::kDefaultDuckDb;
+    if (config.isObject() && config.hasKey("duckDb") && config["duckDb"].isNumber())
+        db = config["duckDb"].asNumber<double>();
+    mDuckDepth = DuckPolicy::levelForDb(db);
+    PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT,
+        "ducking: alerts lower the music by %.1f dB (%d volume steps)",
+        mDuckDepth * DuckPolicy::kDbPerVolumeStep, mDuckDepth);
 }
 
 void AudioPolicyManager::updateDucking()
@@ -1520,11 +1540,12 @@ void AudioPolicyManager::updateDucking()
         const std::string streamType = getStreamType(sink);
         active.push_back({streamType, 0 != getCurrentSinkMuteStatus(streamType)});
     }
-    const int target = DuckPolicy::targetPercent(DuckPolicy::shouldDuck(active, mRingerOn));
+    const int target = DuckPolicy::targetLevel(DuckPolicy::shouldDuck(active, mRingerOn), mDuckDepth);
     if (target == mDuckTarget)
         return;
     PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT,
-        "updateDucking: music %d%% -> %d%%", mDuckPercent, target);
+        "updateDucking: music -%.1f dB -> -%.1f dB",
+        mDuckLevel * DuckPolicy::kDbPerVolumeStep, target * DuckPolicy::kDbPerVolumeStep);
     mDuckTarget = target;
     if (!mDuckTimer)
         mDuckTimer = g_timeout_add(DuckPolicy::kRampStepMs, duckRampStep, this);
@@ -1533,18 +1554,19 @@ void AudioPolicyManager::updateDucking()
 gboolean AudioPolicyManager::duckRampStep(gpointer data)
 {
     AudioPolicyManager *self = static_cast<AudioPolicyManager*>(data);
-    self->mDuckPercent = DuckPolicy::nextPercent(self->mDuckPercent, self->mDuckTarget);
-    self->applyDuckPercent();
-    if (self->mDuckPercent != self->mDuckTarget)
+    self->mDuckLevel = DuckPolicy::nextLevel(self->mDuckLevel, self->mDuckTarget,
+                                             DuckPolicy::rampStep(self->mDuckDepth));
+    self->applyDuckLevel();
+    if (self->mDuckLevel != self->mDuckTarget)
         return G_SOURCE_CONTINUE;
     self->mDuckTimer = 0;
     return G_SOURCE_REMOVE;
 }
 
 /* Puts the music back at its own volume - the policy volume while a call or
- * another stream holds it down - times the ducking share, which setVolume
+ * another stream holds it down - less the ducking level, which setVolume
  * applies. */
-void AudioPolicyManager::applyDuckPercent()
+void AudioPolicyManager::applyDuckLevel()
 {
     for (const auto &elements : mVolumePolicyInfo)
     {
@@ -3030,8 +3052,9 @@ AudioPolicyManager::AudioPolicyManager(ModuleConfig* const pConfObj):mObjModuleM
                                                                      mObjPolicyInfoParser(nullptr),\
                                                                      mObjAudioMixer(nullptr),\
                                                                      mRingerOn(true),\
-                                                                     mDuckPercent(DuckPolicy::targetPercent(false)),\
-                                                                     mDuckTarget(DuckPolicy::targetPercent(false)),\
+                                                                     mDuckDepth(DuckPolicy::levelForDb(DuckPolicy::kDefaultDuckDb)),\
+                                                                     mDuckLevel(0),\
+                                                                     mDuckTarget(0),\
                                                                      mDuckTimer(0)
 {
     PM_LOG_DEBUG("AudioPolicyManager: constructor");

@@ -17,6 +17,7 @@
 * LICENSE@@@ */
 
 #include "playbackManager.h"
+#include "audioPolicyManager.h"
 
 #define DEFAULT_SAMPLE_RATE 48000
 #define DEFAULT_CHANNELS 2
@@ -217,8 +218,13 @@ bool PlaybackManager::_playSound(LSHandle *lshandle, LSMessage *message, void *c
         AudioMixer* audioMixerObj = playbackObj->mObjAudioMixer;
         if (audioMixerObj)
         {
+            // An alert lowers the music while it plays; give the music the
+            // time to go down before the sound starts, or a short one is
+            // over before the drop is heard.
+            const AudioPolicyManager *policy = AudioPolicyManager::getAudioPolicyManagerInstance();
+            const unsigned leadInMs = policy ? policy->duckLeadInMs(sink) : 0;
             std::string playbackID = audioMixerObj->playSound(filePath.c_str(), \
-                virtualSink, format.c_str(), sampleRate, channels);
+                virtualSink, format.c_str(), sampleRate, channels, leadInMs);
 
             if(playbackID.empty())
             {

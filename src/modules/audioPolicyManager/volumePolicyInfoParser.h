@@ -38,6 +38,8 @@ class VolumePolicyInfoParser
         VolumePolicyInfoParser();
         ~VolumePolicyInfoParser();
         pbnjson::JValue getVolumePolicyInfo(const bool& isSink);
+        //! The whole sink volume policy config, for settings outside streamDetails.
+        const pbnjson::JValue &getSinkVolumePolicyConfig() const { return fileJsonVolumePolicyConfig; }
         bool loadVolumePolicyJsonConfig();
 };
 

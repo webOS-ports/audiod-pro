@@ -17,6 +17,7 @@
 #ifndef _DUCK_POLICY_H
 #define _DUCK_POLICY_H
 
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -31,7 +32,7 @@
  * pringtones (palarm too, so an alarm follows the ringer switch like a
  * ringtone; 2.x let an alarm duck regardless). 2.x left A2DP alone; LuneOS
  * ducks there as well, since the volume is set per stream on whatever sink
- * carries it.
+ * carries it, and lowers by kDefaultDuckDb unless the config says otherwise.
  */
 namespace DuckPolicy
 {
@@ -42,11 +43,16 @@ namespace DuckPolicy
         bool muted;
     };
 
-    //! What a ducked stream is played at, as a share of its volume: on
-    //! palm-policy's volume table 70 is 12.1 dB under 100.
-    constexpr int kDuckedPercent = 70;
-    //! How far one ramp step moves the share, and how often.
-    constexpr int kRampStepPercent = 5;
+    //! palm-policy's volume table 0, which every music stream uses, is
+    //! linear in dB from 2 to 100: one step of the volume (0..100) is
+    //! 0.404 dB, so 70 is 12.12 dB under 100. Lowering the volume by a
+    //! number of steps lowers the music by the same dB at any volume.
+    constexpr double kDbPerVolumeStep = 0.404;
+    //! How far the music goes down when no config says (Droidian's
+    //! module-role-ducking default; webOS 2.x used 12 dB, Android 14 dB).
+    constexpr double kDefaultDuckDb = -20.0;
+    //! The ramp takes this many steps, one every kRampStepMs.
+    constexpr int kRampSteps = 6;
     constexpr unsigned kRampStepMs = 30;
 
     //! Whether streamType lowers the music while it plays.
@@ -59,14 +65,34 @@ namespace DuckPolicy
     //! audible ducking stream, with the ringer switch on.
     bool shouldDuck(const std::vector<ActiveStream> &active, bool ringerOn);
 
-    //! The share, in percent, the music is played at when ducked or not.
-    int targetPercent(bool ducked);
+    //! How many volume steps lower the music by db (negative, or 0 for no
+    //! ducking); a positive db is read as its negative.
+    int levelForDb(double db);
+
+    //! The level, in volume steps below its own volume, the music goes to.
+    int targetLevel(bool ducked, int duckLevel);
+
+    //! How far one ramp step moves the level, so a full duck takes kRampSteps.
+    int rampStep(int duckLevel);
 
     //! The next ramp step from current towards target; target once there.
-    int nextPercent(int current, int target);
+    int nextLevel(int current, int target, int step);
 
-    //! volume (0..100) played at percent of itself.
-    int scaled(int volume, int percent);
+    //! volume (0..100) lowered by level steps; an audible stream stays
+    //! audible, at 1 at least.
+    int duckedVolume(int volume, int level);
+
+    //! How long a sound on streamType waits before its samples start, so
+    //! that it starts against music that is already down: the time the ramp
+    //! still needs from currentLevel, plus one step for the mixer to report
+    //! the new stream. Nothing when the sound does not duck, or the music is
+    //! down already.
+    unsigned leadInMs(const std::string &streamType, bool ringerOn,
+                      int currentLevel, int duckLevel);
+
+    //! Bytes of silence that play for ms at rate frames a second of
+    //! frameBytes each.
+    size_t silenceBytes(unsigned ms, unsigned rate, unsigned frameBytes);
 }
 
 #endif // _DUCK_POLICY_H

@@ -1396,9 +1396,10 @@ bool PulseAudioMixer::playSystemSound(const char *snd, EVirtualAudioSink sink)
     return mPulseLink.play(snd, sink);
 }
 
-std::string PulseAudioMixer::playSound(const char *snd, EVirtualAudioSink sink, const char *format, int rate, int channels)
+std::string PulseAudioMixer::playSound(const char *snd, EVirtualAudioSink sink, const char *format, int rate, int channels,
+                                       unsigned leadInMs)
 {
-    return mPulseLink.play(snd, sink, format, rate, channels);
+    return mPulseLink.play(snd, sink, format, rate, channels, leadInMs);
 }
 
 bool PulseAudioMixer::controlPlayback(std::string playbackId, std::string requestType)

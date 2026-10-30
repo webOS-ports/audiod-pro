@@ -95,8 +95,9 @@ class AudioMixer : public MixerInterface
         bool setVolume(const char* deviceName, const int& volume, LSHandle *lshandle, LSMessage *message, void *ctx, PulseCallBackFunc cb);
         bool setMicVolume(const char* deviceName, const int& volume, LSHandle *lshandle, LSMessage *message, void *ctx, PulseCallBackFunc cb);
         bool playSystemSound(const char *snd, EVirtualAudioSink sink);
+        //! leadInMs of silence go before the sound (see DuckPolicy::leadInMs).
         std::string playSound(const char *snd, EVirtualAudioSink sink, \
-            const char *format, int rate, int channels);
+            const char *format, int rate, int channels, unsigned leadInMs = 0);
         bool controlPlayback(std::string playbackId, std::string requestType);
         std::string getPlaybackStatus(std::string playbackId);
         bool externalSoundcardPathCheck(std::string filename,  int status);

@@ -18,10 +18,12 @@
 #include <unistd.h>
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <vector>
 
 #include "PulseAudioLink.h"
 #include "wavHeader.h"
+#include "duckPolicy.h"
 
 // pa_simple_cork() is an LG addition to libpulse-simple; it exists only in
 // webosose/pulseaudio-webos, and LuneOS builds against upstream PulseAudio.
@@ -278,7 +280,8 @@ bool PulseAudioLink::play(const char * samplename, const char * sink)
     return true;
 }
 
-std::string PulseAudioLink::playSound(const char * samplename, const char * sink, const char * format, int rate, int channels)
+std::string PulseAudioLink::playSound(const char * samplename, const char * sink, const char * format, int rate, int channels,
+                                      unsigned leadInMs)
 {
     // Sounds that have played to their end have let go of their stream;
     // drop them here, as nobody asks for a notification to be stopped.
@@ -295,7 +298,7 @@ std::string PulseAudioLink::playSound(const char * samplename, const char * sink
 
     std::string playbackID = GenerateUniqueID()();
     PlaybackThread *thread = new PlaybackThread(mCallback, playbackID);
-    bool ret = thread->play(samplename, sink, format, rate, channels);
+    bool ret = thread->play(samplename, sink, format, rate, channels, leadInMs);
     if (ret)
     {
         mMapAudioList[playbackID] = thread;
@@ -492,7 +495,8 @@ bool PulseAudioLink::play(PulseAudioDataProvider* data, const char* sinkname)
     return true;
 }
 
-std::string PulseAudioLink::play(const char *snd, EVirtualAudioSink sink, const char *format, int rate, int channels)
+std::string PulseAudioLink::play(const char *snd, EVirtualAudioSink sink, const char *format, int rate, int channels,
+                                 unsigned leadInMs)
 {
     PMTRACE_FUNCTION;
     PM_LOG_INFO(MSGID_PULSE_LINK, INIT_KVCOUNT,\
@@ -504,7 +508,7 @@ std::string PulseAudioLink::play(const char *snd, EVirtualAudioSink sink, const 
             "'%d' is not a valid sink id", (int)sink);
         return std::string();
     }
-    return playSound(snd, virtualSinkName(sink, false), format, rate, channels);
+    return playSound(snd, virtualSinkName(sink, false), format, rate, channels, leadInMs);
 }
 
 bool PulseAudioLink::connectToPulse()
@@ -1044,7 +1048,7 @@ bool PulseDtmfGenerator::stream_write_callback(pa_stream *stream, size_t length)
 }
 
 PlaybackThread::PlaybackThread(MixerInterface* mixerCallBack, std::string playbackID)
-    : mDataAvailable(false), mFinished(false), mRemaining(0)
+    : mDataAvailable(false), mFinished(false), mRemaining(0), mLeadIn(0), mSilence(0)
 {
     mCallback = mixerCallBack;
     mPlaybackId = playbackID;
@@ -1108,6 +1112,16 @@ bool PlaybackThread::playThread()
         return false;
     }
     setState("playing");
+    // Silence first, if asked: the stream is open, so an alert has already
+    // started lowering the music, and the sound starts once it is down.
+    memset(mPlayData, mSilence, dataSize);
+    while (mDataAvailable && mLeadIn > 0) {
+        const size_t n = std::min(dataSize, mLeadIn);
+        mLeadIn -= n;
+        if (pa_simple_write(mStream, mPlayData, n, NULL) < 0) {
+            mDataAvailable = false;
+        }
+    }
     bool played = false;
     while (mDataAvailable) {
         // Read data from the file, no further than the samples go: a WAV
@@ -1145,7 +1159,8 @@ bool PlaybackThread::isFinished() const
     return mFinished;
 }
 
-bool PlaybackThread::play(const char * samplename, const char * sink, const char * format, int rate, int channels)
+bool PlaybackThread::play(const char * samplename, const char * sink, const char * format, int rate, int channels,
+                          unsigned leadInMs)
 {
     PMTRACE_FUNCTION;
     PM_LOG_DEBUG(" PlaybackThread::play");
@@ -1196,6 +1211,13 @@ bool PlaybackThread::play(const char * samplename, const char * sink, const char
         closeFile();
         return false;
     }
+
+    mSilence = ss.format == PA_SAMPLE_U8 ? 0x80 : 0;
+    mLeadIn = DuckPolicy::silenceBytes(leadInMs, ss.rate, static_cast<unsigned>(pa_frame_size(&ss)));
+    if (mLeadIn)
+        PM_LOG_INFO(MSGID_PULSE_LINK, INIT_KVCOUNT,
+                "PulseAudioLink::play: %u ms of silence before %s, while the music goes down",
+                leadInMs, samplename);
 
     mStream = pa_simple_new(NULL, NULL, PA_STREAM_PLAYBACK, sink,
             "playback", &ss, NULL, NULL, NULL);

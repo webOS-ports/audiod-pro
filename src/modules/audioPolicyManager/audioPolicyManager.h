@@ -48,14 +48,18 @@ class AudioPolicyManager : public ModuleInterface
         utils::mapSourceToStream mSourceToStream;
         utils::mapStreamToSource mStreamToSource;
         utils::mapTrackVolumeInfo mTrackVolumeInfo;
-        /* Ducking: the music is played at mDuckPercent of its volume, ramped
-         * towards mDuckTarget by mDuckTimer (see duckPolicy.h). */
+        /* Ducking: the music is played mDuckLevel volume steps under its
+         * own volume, ramped towards mDuckTarget by mDuckTimer; a full duck
+         * is mDuckDepth steps (duckDb in the volume policy config, see
+         * duckPolicy.h). */
         bool mRingerOn;
-        int mDuckPercent;
+        int mDuckDepth;
+        int mDuckLevel;
         int mDuckTarget;
         guint mDuckTimer;
         void updateDucking();
-        void applyDuckPercent();
+        void applyDuckLevel();
+        void readDuckDepth(const pbnjson::JValue &config);
         static gboolean duckRampStep(gpointer data);
         int duckedVolume(EVirtualAudioSink audioSink, int volume);
         static bool mIsObjRegistered;
@@ -193,6 +197,9 @@ class AudioPolicyManager : public ModuleInterface
         bool setStreamMute(const std::string& streamType, const bool& mute);
         //! The ringer switch, which lets alerts lower the music (duckPolicy.h).
         void setRingerOn(bool ringerOn);
+        //! How long a sound about to play on streamType should hold back its
+        //! samples so the music is down when it starts (duckPolicy.h).
+        unsigned duckLeadInMs(const std::string &streamType) const;
         bool getStreamMute(const std::string& streamType);
 
         //Luna API callbacks for pulseaudio calls
