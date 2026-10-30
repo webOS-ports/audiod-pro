@@ -1235,12 +1235,15 @@ void PalmLegacyManager::setJackState(EJackState state)
     /* Pulling the plug is the moment music would otherwise carry on out of
      * the loudspeaker. Only a real unplug counts -- going from unknown to
      * unplugged at start-up is not one. During a call there is nothing
-     * playing to pause, but resuming afterwards would now be out loud. */
+     * playing to pause, but resuming afterwards would now be out loud. With
+     * Bluetooth carrying the audio the plug was not playing anything, and
+     * the music goes on in the headset. */
     if (wasPlugged && !jackPlugged())
     {
-        if (mCallMode == eCallMode_None)
+        const CallState::Unplug unplug = CallState::unplugged(mCallMode, !mBtAudioSink.empty());
+        if (unplug.pauseMedia)
             pauseMedia(false);
-        else
+        if (unplug.keepPausedAfterCall)
             mResumeMediaAfterCall = false;
     }
 

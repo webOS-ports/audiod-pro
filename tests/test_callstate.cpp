@@ -283,3 +283,31 @@ TEST(CallState, MovingBetweenCallsIsNotATransition)
 }
 
 } // namespace
+
+TEST(CallState, UnpluggingPausesTheMusic)
+{
+    const CallState::Unplug u = CallState::unplugged(eCallMode_None, false);
+    EXPECT_TRUE(u.pauseMedia);
+    EXPECT_FALSE(u.keepPausedAfterCall);
+}
+
+TEST(CallState, UnpluggingInACallKeepsTheMusicPausedAfterIt)
+{
+    for (auto mode : {eCallMode_Carrier, eCallMode_Voip})
+    {
+        const CallState::Unplug u = CallState::unplugged(mode, false);
+        EXPECT_FALSE(u.pauseMedia);
+        EXPECT_TRUE(u.keepPausedAfterCall);
+    }
+}
+
+TEST(CallState, UnpluggingLeavesBluetoothAudioAlone)
+{
+    // The music is in the Bluetooth headset, not in the plug that was pulled.
+    for (auto mode : {eCallMode_None, eCallMode_Carrier, eCallMode_Voip})
+    {
+        const CallState::Unplug u = CallState::unplugged(mode, true);
+        EXPECT_FALSE(u.pauseMedia);
+        EXPECT_FALSE(u.keepPausedAfterCall);
+    }
+}
