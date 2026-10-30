@@ -32,6 +32,7 @@
 #include "callState.h"
 #include "ringState.h"
 #include "paReconnect.h"
+#include "videoSpeaker.h"
 
 /*
  * palmLegacyManager -- serves the Palm-era com.palm.audio API on top of audiod.
@@ -142,6 +143,8 @@ class PalmLegacyManager : public ModuleInterface
         /* Whether a ringtone or alarm is playing: with headphones in, it
          * rings on the loudspeaker as well. */
         RingState mRingState;
+        /* Whether a video call has put itself on the loudspeaker. */
+        VideoSpeaker mVideoSpeaker;
 
         bool mPhoneMuted;
         bool mMicMuted;
@@ -267,6 +270,11 @@ class PalmLegacyManager : public ModuleInterface
          * successful application. */
         void updateCallMode();
         bool applyCallRouting(ECallMode mode, EPhoneRoute route);
+
+        /* A video call goes on the loudspeaker unless a headset is there,
+         * and back to the earpiece when the video stops: see VideoSpeaker.
+         * Moves the /phone route; updateCallMode() applies it. */
+        void followVideo();
 
         /* Reduce the per-line states CallStatusUpdate reports to one call mode
          * and push it to the hardware. */
