@@ -157,7 +157,9 @@ void AudioPolicyManager::eventMixerStatus(bool mixerStatus, utils::EMIXER_TYPE m
 {
     PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT,\
         "AudioPolicyManager::eventMixerStatus mixerStatus:%d mixerType:%d", (int)mixerStatus, (int)mixerType);
-    if (utils::ePulseMixer == mixerType)
+    /* A daemon that has gone takes no volumes; the next one gets them all
+     * when audiod has connected to it. */
+    if (utils::ePulseMixer == mixerType && mixerStatus)
         initStreamVolume();
 }
 

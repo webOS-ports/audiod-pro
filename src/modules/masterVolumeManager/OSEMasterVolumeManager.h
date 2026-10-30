@@ -19,6 +19,7 @@
 
 #include "masterVolumeInterface.h"
 #include "audioMixer.h"
+#include "pulseReplay.h"
 #include <list>
 #include <map>
 
@@ -72,6 +73,8 @@ struct deviceDetail
     bool isActive;
     bool muteStatus;
     bool isOutput;
+    //! Whether volume is one audiod set, rather than the 0 it starts as.
+    bool volumeKnown;
 
     deviceDetail(bool isOutput)
     {
@@ -81,6 +84,7 @@ struct deviceDetail
         muteStatus = false;
         volume = 0;
         display = 0;
+        volumeKnown = false;
     }
 };
 
@@ -102,6 +106,8 @@ class OSEMasterVolumeManager : public MasterVolumeInterface
         std::list<deviceInfo> mIntInputDeviceListDB;
         std::list<deviceInfo> mExtInputDeviceListDB;
         bool mCacheRead;
+        //! Which outputs get their volume and mute again after PulseAudio restarted.
+        PulseReplay mPulseReplay;
         std::map<std::string,std::string> deviceNameMap;
         std::map<std::string,int> deviceVolumeMap;
 

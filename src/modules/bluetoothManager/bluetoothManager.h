@@ -94,6 +94,7 @@ class BluetoothManager : public ModuleInterface
         void handleEvent(events::EVENTS_T* event);
 
         void eventServerStatusInfo (SERVER_TYPE_E serviceName, bool connected);
+        void eventMixerStatus (bool mixerStatus, utils::EMIXER_TYPE mixerType);
         void eventKeyInfo (LUNA_KEY_TYPE_E type, LSMessage *message);
 
         void setBlueToothA2DPActive (bool state, const std::string &address, const std::string &profile,

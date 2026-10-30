@@ -1335,6 +1335,17 @@ void PulseAudioMixer::_pulseGone(GIOChannel *ch)
     g_source_remove (mSourceID);
     g_io_channel_unref(mChannel);
     mChannel = NULL;
+
+    /* Everything audiod told PulseAudio went with it: where the virtual
+     * sinks route, the cards and the Bluetooth module it loaded, the
+     * volumes and mutes. Say so, so that the modules forget what they sent
+     * and send it again once the next connection is up, as at startup.
+     * Without this they went on believing it was all still there, sent
+     * nothing to the new daemon, and every new stream stayed on the virtual
+     * sink it was opened on - a null sink: silence. */
+    if (mObjMixerCallBack)
+        mObjMixerCallBack->callBackMixerStatus(false, utils::ePulseMixer);
+
     g_timeout_add (0, ::_timer, this);
 }
 
