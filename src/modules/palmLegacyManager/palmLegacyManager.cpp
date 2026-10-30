@@ -91,7 +91,8 @@ PalmLegacyManager::PalmLegacyManager(ModuleConfig* const pConfObj) :
     mMediaGeneration(0),
     mPaMainloop(nullptr),
     mPaContext(nullptr),
-    mPaReady(false)
+    mPaReady(false),
+    mPaReconnectTimer(0)
 {
     if (!mObjAudioMixer)
         PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT, "AudioMixer instance is null");
@@ -514,13 +515,12 @@ void PalmLegacyManager::deInitialize()
     mPalmHandle = nullptr;
     mPortsHandle = nullptr;
 
-    if (mPaContext)
+    if (mPaReconnectTimer)
     {
-        pa_context_set_state_callback(mPaContext, nullptr, nullptr);
-        pa_context_disconnect(mPaContext);
-        pa_context_unref(mPaContext);
-        mPaContext = nullptr;
+        g_source_remove(mPaReconnectTimer);
+        mPaReconnectTimer = 0;
     }
+    dropPaContext();
     if (mPaMainloop)
     {
         pa_glib_mainloop_free(mPaMainloop);
@@ -670,8 +670,6 @@ bool PalmLegacyManager::masterVolumeCall(const char *method, pbnjson::JValue pay
 
 bool PalmLegacyManager::connectToPulse()
 {
-    char name[64];
-
     mPaMainloop = pa_glib_mainloop_new(GetMainLoopContext());
     if (!mPaMainloop)
     {
@@ -680,6 +678,16 @@ bool PalmLegacyManager::connectToPulse()
         return false;
     }
 
+    if (!openPaContext())
+        schedulePaReconnect();
+
+    return true;
+}
+
+bool PalmLegacyManager::openPaContext()
+{
+    char name[64];
+
     /* Cannot truncate: 64 bytes for a fixed prefix plus a pid. */
     (void) snprintf(name, sizeof(name), "PalmLegacyManager:%i", getpid());
     mPaContext = pa_context_new(pa_glib_mainloop_get_api(mPaMainloop), name);
@@ -687,8 +695,6 @@ bool PalmLegacyManager::connectToPulse()
     {
         PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
             "Could not create a PulseAudio context");
-        pa_glib_mainloop_free(mPaMainloop);
-        mPaMainloop = nullptr;
         return false;
     }
 
@@ -699,10 +705,50 @@ bool PalmLegacyManager::connectToPulse()
         PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
             "Could not connect to PulseAudio: %s",
             pa_strerror(pa_context_errno(mPaContext)));
+        dropPaContext();
         return false;
     }
 
     return true;
+}
+
+void PalmLegacyManager::dropPaContext()
+{
+    if (!mPaContext)
+        return;
+
+    /* Callbacks cleared first: disconnecting reports TERMINATED, which would
+     * schedule yet another connection. */
+    pa_context_set_state_callback(mPaContext, nullptr, nullptr);
+    pa_context_set_subscribe_callback(mPaContext, nullptr, nullptr);
+    pa_context_disconnect(mPaContext);
+    pa_context_unref(mPaContext);
+    mPaContext = nullptr;
+    mPaReady = false;
+}
+
+void PalmLegacyManager::schedulePaReconnect()
+{
+    if (mPaReconnectTimer)
+        return;
+
+    const unsigned delayMs = mPaReconnect.lost();
+    PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+        "Opening a new PulseAudio connection in %u ms", delayMs);
+    mPaReconnectTimer = g_timeout_add(delayMs, &PalmLegacyManager::paReconnectCb, this);
+}
+
+gboolean PalmLegacyManager::paReconnectCb(gpointer userdata)
+{
+    PalmLegacyManager *self = static_cast<PalmLegacyManager*>(userdata);
+
+    self->mPaReconnectTimer = 0;
+    /* The dead context goes here rather than in its own state callback. */
+    self->dropPaContext();
+    if (!self->openPaContext())
+        self->schedulePaReconnect();
+
+    return G_SOURCE_REMOVE;
 }
 
 void PalmLegacyManager::paContextStateCb(pa_context *c, void *userdata)
@@ -715,10 +761,14 @@ void PalmLegacyManager::paContextStateCb(pa_context *c, void *userdata)
     {
         case PA_CONTEXT_READY:
             self->mPaReady = true;
+            self->mPaReconnect.connected();
             PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
                 "Connected to PulseAudio for call routing");
             /* Assert routing for our current state so the hardware matches
-             * audiod's view whenever we (re)connect. PulseAudio outlives an
+             * audiod's view whenever we (re)connect. A restarted PulseAudio
+             * comes back with the card on its default profile, so a call in
+             * progress gets its voicecall profile and ports back here, and the
+             * sink walk below reports the jack again. PulseAudio outlives an
              * audiod restart and keeps whatever card profile / sink port the
              * previous instance left -- which can be a bare 'voicecall' profile
              * or a parked output port, giving no sound. Applying even the idle
@@ -761,14 +811,19 @@ void PalmLegacyManager::paContextStateCb(pa_context *c, void *userdata)
             break;
         case PA_CONTEXT_FAILED:
         case PA_CONTEXT_TERMINATED:
-            /* PA_CONTEXT_NOFAIL means libpulse reconnects on its own; drop the
+            /* The context is dead for good: PA_CONTEXT_NOFAIL only covers the
+             * first connect, so a new one is opened once PulseAudio is back,
+             * and its READY re-applies the call mode, ports and jack. Drop the
              * applied mode so the next transition is re-pushed to the hardware
-             * rather than being swallowed by updateCallMode()'s early return. */
+             * rather than being swallowed by updateCallMode()'s early return.
+             * The jack state stays: it is the last thing known, and the new
+             * connection's sink walk corrects it. */
             self->mPaReady = false;
             self->mAppliedCallMode = eCallMode_None;
             self->mRingState.clear();
             PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
                 "Lost the PulseAudio connection; call routing is suspended");
+            self->schedulePaReconnect();
             break;
         default:
             break;

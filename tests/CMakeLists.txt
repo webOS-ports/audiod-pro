@@ -17,9 +17,10 @@
 # Unit tests for the parts of audiod that stand on their own: the
 # Bluetooth manager's bookkeeping (btState) and the call state the legacy
 # manager routes and pauses media by (callState), and whether something is
-# ringing (ringState), which output a volume request moves
-# (volumeTarget), when an alert lowers the music (duckPolicy), and what a
-# WAV file's header says about the sound playSound plays (wavHeader).
+# ringing (ringState), when to reconnect to PulseAudio (paReconnect),
+# which output a volume request moves (volumeTarget), when an alert lowers
+# the music (duckPolicy), and what a WAV file's header says about the sound
+# playSound plays (wavHeader).
 
 find_package(GTest REQUIRED)
 
@@ -27,12 +28,14 @@ add_executable(audiod-tests
     ${CMAKE_SOURCE_DIR}/src/modules/bluetoothManager/btState.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/callState.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/ringState.cpp
+    ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/paReconnect.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/masterVolumeManager/volumeTarget.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/audioPolicyManager/duckPolicy.cpp
     ${CMAKE_SOURCE_DIR}/src/wavHeader.cpp
     test_btstate.cpp
     test_callstate.cpp
     test_ringstate.cpp
+    test_pareconnect.cpp
     test_volumetarget.cpp
     test_duckpolicy.cpp
     test_wavheader.cpp)
