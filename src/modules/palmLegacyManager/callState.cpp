@@ -109,3 +109,22 @@ CallState::Unplug CallState::unplugged(ECallMode mode, bool bluetoothAudio)
     u.keepPausedAfterCall = !u.pauseMedia;
     return u;
 }
+
+bool CallState::isBluetoothOutput(const std::string &name)
+{
+    return name.compare(0, 11, "bluez_sink.") == 0 ||
+           name.compare(0, 13, "bluez_output.") == 0;
+}
+
+bool CallState::isUsbOutput(const std::string &name)
+{
+    return name.compare(0, 11, "usb_speaker") == 0;
+}
+
+CallState::Unplug CallState::outputMoved(ECallMode mode, const std::string &from,
+                                         const std::string &to, bool jackPlugged)
+{
+    if (!isUsbOutput(from) || isUsbOutput(to))
+        return Unplug{};
+    return unplugged(mode, isBluetoothOutput(to) || jackPlugged);
+}
