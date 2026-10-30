@@ -438,7 +438,7 @@ std::string OSEMasterVolumeManager::getMappedName (std::string deviceName)
     }
 }
 
-std::string OSEMasterVolumeManager::volumeTargetOf(const std::string &soundOutput)
+bool OSEMasterVolumeManager::syncBluetoothAudio()
 {
     const PalmLegacyManager *legacy = PalmLegacyManager::getPalmLegacyManagerInstance();
     const std::string btSink = legacy ? legacy->bluetoothAudioSink() : std::string();
@@ -450,10 +450,15 @@ std::string OSEMasterVolumeManager::volumeTargetOf(const std::string &soundOutpu
         mBluetoothName = btSink;
         setConnStatus(VolumeTarget::kBluetoothOutput, DISPLAY_ONE, true, true);
     }
+    return !btSink.empty();
+}
 
+std::string OSEMasterVolumeManager::volumeTargetOf(const std::string &soundOutput)
+{
+    const bool bluetoothAudio = syncBluetoothAudio();
     const std::string target = VolumeTarget::output(soundOutput, getActiveDevice(DISPLAY_ONE, true),
                                                     getConnStatus(soundOutput, DISPLAY_ONE, true),
-                                                    !btSink.empty());
+                                                    bluetoothAudio);
     if (target != soundOutput)
         PM_LOG_INFO(MSGID_CLIENT_MASTER_VOLUME_MANAGER, INIT_KVCOUNT,
             "volume for %s goes to %s, which carries the audio", soundOutput.c_str(), target.c_str());
@@ -2288,6 +2293,10 @@ std::string OSEMasterVolumeManager::getVolumeInfo(const std::string &soundOutput
     if (soundOutput == "alsa" || soundOutput.empty())
     {
         soundDevice = getActiveDevice(display,true);
+        /* What the volume keys move: the headset that carries the audio,
+         * also when this side missed it becoming active. */
+        if (DISPLAY_ONE == display)
+            soundDevice = VolumeTarget::reported(soundDevice, syncBluetoothAudio());
     }
     else
     {

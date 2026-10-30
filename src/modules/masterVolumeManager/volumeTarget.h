@@ -49,6 +49,11 @@ namespace VolumeTarget
     //! bluetoothAudio whether a Bluetooth headset carries the audio.
     std::string output(const std::string &requested, const std::string &active,
                        bool requestedConnected, bool bluetoothAudio);
+
+    //! The output getVolume reports when the client names none, with active
+    //! the display's active output and bluetoothAudio whether a Bluetooth
+    //! headset carries the audio: the output the volume keys move.
+    std::string reported(const std::string &active, bool bluetoothAudio);
 }
 
 #endif // _VOLUME_TARGET_H

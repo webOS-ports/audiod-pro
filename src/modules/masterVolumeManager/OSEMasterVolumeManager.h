@@ -164,6 +164,9 @@ class OSEMasterVolumeManager : public MasterVolumeInterface
         std::string getMappedName (std::string deviceName);
         std::string getActualDeviceName (std::string mappedName);
         //! The output a setVolume naming soundOutput moves; see volumeTarget.h.
+        //! Whether a Bluetooth headset carries the audio, telling this side
+        //! about it if it missed the headset.
+        bool syncBluetoothAudio();
         std::string volumeTargetOf(const std::string &soundOutput);
 
         void setVolume(LSHandle *lshandle, LSMessage *message, void *ctx);
