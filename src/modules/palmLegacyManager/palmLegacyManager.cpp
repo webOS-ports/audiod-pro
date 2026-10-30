@@ -764,6 +764,9 @@ void PalmLegacyManager::dropPaContext()
     pa_context_unref(mPaContext);
     mPaContext = nullptr;
     mPaReady = false;
+    /* Its operations went with it, callbacks and all. */
+    mUsbRingDrops.clear();
+    mUsbRing.paGone();
 }
 
 void PalmLegacyManager::schedulePaReconnect()
@@ -846,6 +849,13 @@ void PalmLegacyManager::paContextStateCb(pa_context *c, void *userdata)
                 op = pa_context_get_sink_input_info_list(c, &PalmLegacyManager::paRingInputCb, self);
                 if (op)
                     pa_operation_unref(op);
+
+                /* A combined loudspeaker-and-USB sink an earlier audiod left
+                 * goes first; then the one for now can be loaded. */
+                op = pa_context_get_sink_info_by_name(c, UsbRing::SINK,
+                                                      &PalmLegacyManager::paUsbRingStaleCb, self);
+                if (op)
+                    pa_operation_unref(op);
             }
             break;
         case PA_CONTEXT_FAILED:
@@ -860,6 +870,10 @@ void PalmLegacyManager::paContextStateCb(pa_context *c, void *userdata)
             self->mPaReady = false;
             self->mAppliedCallMode = eCallMode_None;
             self->mRingState.clear();
+            /* The combined sink went with PulseAudio: the router must not
+             * send the ringtones to it once PulseAudio is back. */
+            self->mUsbRing.paGone();
+            self->syncUsbRing();
             PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
                 "Lost the PulseAudio connection; call routing is suspended");
             self->schedulePaReconnect();
@@ -1428,9 +1442,199 @@ void PalmLegacyManager::followUsbOutput(const std::string &sinkName)
     notifyStatusSubscribers();
 }
 
+/* ------------------------------------------------------------------------- *
+ * A USB headset rings on the loudspeaker too -- see usbRing.h
+ * ------------------------------------------------------------------------- */
+
+void PalmLegacyManager::syncUsbRing()
+{
+    /* At most an unload of the sink for a headset gone and a load for the
+     * one now: next() says Unload only for a loaded module. */
+    for (int step = 0; step < 2; step++)
+    {
+        const UsbRing::Step next = mUsbRing.next();
+        if (next == UsbRing::Step::Unload)
+        {
+            const uint32_t module = mUsbRing.module();
+            mUsbRing.unloading();
+            {
+                /* The router stops sending to the sink before it goes. */
+                AudioRouter *router = AudioRouter::getAudioRouterInstance();
+                if (router)
+                    router->setClassOverride(ClassRoute::Override{});
+            }
+            dropUsbRingSink(module);
+            continue;
+        }
+        if (next == UsbRing::Step::Load && mPaReady && mPaContext)
+        {
+            const std::string args = UsbRing::moduleArguments(mUsbRing.wanted());
+            pa_operation *op = pa_context_load_module(mPaContext, "module-combine-sink", args.c_str(),
+                                                      &PalmLegacyManager::paUsbRingLoadedCb, this);
+            if (op)
+            {
+                pa_operation_unref(op);
+                mUsbRing.loading();
+                PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+                    "USB ring: loading module-combine-sink %s", args.c_str());
+            }
+            else
+                PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+                    "USB ring: could not ask PulseAudio for the combined sink");
+        }
+        break;
+    }
+
+    ClassRoute::Override override;
+    if (mUsbRing.ready())
+    {
+        override.whileOutput = mUsbRing.wanted();
+        override.target = UsbRing::SINK;
+        override.classes = UsbRing::classes(mCallMode, mRingerOn);
+    }
+    AudioRouter *router = AudioRouter::getAudioRouterInstance();
+    if (router)
+        router->setClassOverride(override);
+}
+
+void PalmLegacyManager::paUsbRingLoadedCb(pa_context *, uint32_t idx, void *userdata)
+{
+    PalmLegacyManager *self = static_cast<PalmLegacyManager*>(userdata);
+    if (!self)
+        return;
+
+    if (idx == PA_INVALID_INDEX)
+    {
+        PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+            "USB ring: module-combine-sink did not load; ringtones stay in the USB headset only");
+        self->mUsbRing.loadFailed();
+    }
+    else
+    {
+        PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+            "USB ring: %s is module %u", UsbRing::SINK, idx);
+        self->mUsbRing.loaded(idx);
+    }
+    /* Ready: the router sends the classes to it. Or the headset went while
+     * it loaded: it is unloaded again. */
+    self->syncUsbRing();
+}
+
+void PalmLegacyManager::paUsbRingStaleCb(pa_context *, const pa_sink_info *info, int eol, void *userdata)
+{
+    PalmLegacyManager *self = static_cast<PalmLegacyManager*>(userdata);
+    if (!self)
+        return;
+
+    if (!eol)
+    {
+        if (info && info->owner_module != PA_INVALID_INDEX)
+        {
+            PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+                "USB ring: %s of an earlier audiod is still there, unloading module %u",
+                UsbRing::SINK, info->owner_module);
+            self->dropUsbRingSink(info->owner_module);
+        }
+        return;
+    }
+
+    /* Unloads are sent before any load on the same connection. */
+    self->mUsbRing.checked();
+    self->syncUsbRing();
+}
+
+/* What plays on the sink is moved to the output in use first: unloading a
+ * sink ends the streams on it, and the router's re-routing goes over another
+ * connection, which PulseAudio may well read after this one. */
+void PalmLegacyManager::dropUsbRingSink(uint32_t module)
+{
+    if (!mPaReady || !mPaContext || module == UsbRing::NO_MODULE)
+        return;
+
+    mUsbRingDrops.push_back(UsbRingDrop{this, module, PA_INVALID_INDEX,
+                                        mActiveSoundOutput.empty() ? std::string(UsbRing::SPEAKER)
+                                                                   : mActiveSoundOutput});
+    UsbRingDrop *drop = &mUsbRingDrops.back();
+    pa_operation *op = pa_context_get_sink_info_by_name(mPaContext, UsbRing::SINK,
+                                                        &PalmLegacyManager::paUsbRingDropSinkCb, drop);
+    if (op)
+        pa_operation_unref(op);
+    else
+        finishUsbRingDrop(drop);
+}
+
+void PalmLegacyManager::paUsbRingDropSinkCb(pa_context *c, const pa_sink_info *info, int eol, void *userdata)
+{
+    UsbRingDrop *drop = static_cast<UsbRingDrop*>(userdata);
+    if (!drop)
+        return;
+
+    if (!eol)
+    {
+        if (info && info->owner_module == drop->module)
+            drop->sink = info->index;
+        return;
+    }
+
+    if (drop->sink == PA_INVALID_INDEX)
+    {
+        /* No sink by that name (any more) for this module: just unload. */
+        drop->self->finishUsbRingDrop(drop);
+        return;
+    }
+
+    pa_operation *op = pa_context_get_sink_input_info_list(c, &PalmLegacyManager::paUsbRingDropInputCb, drop);
+    if (op)
+        pa_operation_unref(op);
+    else
+        drop->self->finishUsbRingDrop(drop);
+}
+
+void PalmLegacyManager::paUsbRingDropInputCb(pa_context *c, const pa_sink_input_info *info, int eol,
+                                             void *userdata)
+{
+    UsbRingDrop *drop = static_cast<UsbRingDrop*>(userdata);
+    if (!drop)
+        return;
+
+    if (!eol)
+    {
+        if (info && info->sink == drop->sink)
+        {
+            pa_operation *op = pa_context_move_sink_input_by_name(c, info->index, drop->fallback.c_str(),
+                                                                  nullptr, nullptr);
+            if (op)
+                pa_operation_unref(op);
+        }
+        return;
+    }
+
+    drop->self->finishUsbRingDrop(drop);
+}
+
+void PalmLegacyManager::finishUsbRingDrop(UsbRingDrop *drop)
+{
+    if (mPaReady && mPaContext)
+    {
+        pa_operation *op = pa_context_unload_module(mPaContext, drop->module, nullptr, nullptr);
+        if (op)
+            pa_operation_unref(op);
+    }
+    for (auto it = mUsbRingDrops.begin(); it != mUsbRingDrops.end(); ++it)
+    {
+        if (&*it == drop)
+        {
+            mUsbRingDrops.erase(it);
+            break;
+        }
+    }
+}
+
 void PalmLegacyManager::setActiveOutput(const std::string &sinkName)
 {
     followUsbOutput(sinkName);
+    mUsbRing.outputIs(sinkName);
+    syncUsbRing();
 
     if (isBluetoothSink(sinkName))
     {
@@ -1822,6 +2026,10 @@ void PalmLegacyManager::sendMediaKey(const char *keyEvent)
 void PalmLegacyManager::updateCallMode()
 {
     followVideo();
+
+    /* A call takes the ringtones and alerts off the loudspeaker a USB
+     * headset rings on too, and its end puts them back. */
+    syncUsbRing();
 
     /* The SCO link first: effectiveRoute() only puts the call on the
      * headset once the link is up, and a link no longer wanted is closed
@@ -2942,6 +3150,9 @@ bool PalmLegacyManager::_setRingerSwitch(LSHandle *sh, LSMessage *message, void 
         /* And, as on 2.x, alerts only lower the music with the switch on. */
         if (policy)
             policy->setRingerOn(ringerOn);
+        /* With a USB headset, alerts ring on the loudspeaker too only with
+         * the switch on. */
+        self->syncUsbRing();
         self->notifyStatusSubscribers();
     }
 

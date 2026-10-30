@@ -19,6 +19,7 @@
 #ifndef _PALM_LEGACY_MANAGER_H_
 #define _PALM_LEGACY_MANAGER_H_
 
+#include <list>
 #include <set>
 #include <string>
 #include <vector>
@@ -31,6 +32,7 @@
 #include "moduleManager.h"
 #include "callState.h"
 #include "ringState.h"
+#include "usbRing.h"
 #include "paReconnect.h"
 #include "videoSpeaker.h"
 #include "btCall.h"
@@ -179,6 +181,20 @@ class PalmLegacyManager : public ModuleInterface, private HfpAgent::Listener
         /* The USB headset's sink (usb_speaker0, ...) while it carries the
          * audio, "" otherwise; followed through the active output as well. */
         std::string mUsbAudioSink;
+        /* While a USB headset carries the audio, the ringtones and alerts go
+         * to a sink combining it with the loudspeaker: see usbRing.h. */
+        UsbRing mUsbRing;
+        /* Taking the combined sink down: what plays on it is moved to
+         * fallback, then its module is unloaded. A chain of callbacks on
+         * mPaContext; dropPaContext() frees what a dead context left. */
+        struct UsbRingDrop
+        {
+            PalmLegacyManager *self;
+            uint32_t module;
+            uint32_t sink;
+            std::string fallback;
+        };
+        std::list<UsbRingDrop> mUsbRingDrops;
 
         /* Call audio on a hands-free headset: oFono is the gateway, mHfpAgent
          * its audio agent holding the SCO link, mBtCall what is connected and
@@ -261,6 +277,17 @@ class PalmLegacyManager : public ModuleInterface, private HfpAgent::Listener
         void tellRouterJack();
         void setActiveOutput(const std::string &sinkName);
         void followUsbOutput(const std::string &sinkName);
+        /* The combined loudspeaker-and-USB sink and the router's override
+         * for it, in line with the output, the call mode and the ringer
+         * switch. */
+        void syncUsbRing();
+        void dropUsbRingSink(uint32_t module);
+        void finishUsbRingDrop(UsbRingDrop *drop);
+        static void paUsbRingLoadedCb(pa_context *c, uint32_t idx, void *userdata);
+        static void paUsbRingStaleCb(pa_context *c, const pa_sink_info *info, int eol, void *userdata);
+        static void paUsbRingDropSinkCb(pa_context *c, const pa_sink_info *info, int eol, void *userdata);
+        static void paUsbRingDropInputCb(pa_context *c, const pa_sink_input_info *info, int eol,
+                                         void *userdata);
         bool jackPlugged() const
         {
             return mJackState == eJack_Headphones || mJackState == eJack_Headset;
