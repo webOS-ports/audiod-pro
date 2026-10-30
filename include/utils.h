@@ -24,6 +24,7 @@
 #include "log.h"
 #include "ConstString.h"
 #include <pulse/module-palm-policy-tables.h>
+#include <cstdint>
 #include <map>
 #include <string>
 #include <vector>
@@ -250,6 +251,14 @@ namespace utils
         int priority;
         bool isConnected;
         std::string deviceType;
+        /* Plugged in or paired by the user (jack, Bluetooth, USB): of
+         * these the one connected last carries the audio, see
+         * audioRouter/outputChoice.h. connectedAt orders them. */
+        bool removable;
+        std::uint64_t connectedAt;
+        /* The sink the output plays through when it has none of its own
+         * name: on LuneOS the headphone jack is a port of pcm_output. */
+        std::string sinkName;
         deviceInfo()
         {
             activeStatus = false;
@@ -261,6 +270,8 @@ namespace utils
             volumeStep = 1;
             priority = -1;
             isConnected  = false;
+            removable = false;
+            connectedAt = 0;
         }
     }DEVICE_INFO_T;
 

@@ -21,6 +21,7 @@
 
 #include "palmLegacyManager.h"
 #include "audioPolicyManager.h"
+#include "audioRouter.h"
 #include "main.h"
 
 #define PALM_AUDIO_SERVICE      "com.palm.audio"
@@ -1287,6 +1288,25 @@ void PalmLegacyManager::setJackState(EJackState state)
         "Headphone jack state %d -> %d", (int) mJackState, (int) state);
     mJackState = state;
 
+    /* audioRouter decides where media goes: of the jack and a Bluetooth
+     * headset, the one connected last. The jack is a port of pcm_output, so
+     * PulseAudio has no sink of its own to announce for it: tell the router
+     * here. It answers at once with the output now in use (handleEvent ->
+     * setActiveOutput), so on an unplug mBtAudioSink below already says
+     * whether a Bluetooth headset took the audio over, and a video call
+     * re-routed from there (followVideo) sees that headset rather than
+     * none and stays off the loudspeaker. Told directly rather
+     * than through a module event: the master volume manager would take
+     * pcm_headphone for a device with a volume of its own. */
+    if (wasPlugged != jackPlugged())
+    {
+        AudioRouter *router = AudioRouter::getAudioRouterInstance();
+        if (router)
+            router->eventDeviceConnectionStatus("pcm_headphone", "pcm_headphone", "",
+                jackPlugged() ? utils::eDeviceConnected : utils::eDeviceDisconnected,
+                utils::ePulseMixer, true);
+    }
+
     /* Pulling the plug is the moment music would otherwise carry on out of
      * the loudspeaker. Only a real unplug counts -- going from unknown to
      * unplugged at start-up is not one. During a call there is nothing
@@ -1355,11 +1375,17 @@ void PalmLegacyManager::setActiveOutput(const std::string &sinkName)
     mBtAudioName.clear();
 
     /* Same as pulling the headphone plug: the headset going away (switched
-     * off, out of range) would otherwise drop the music onto the speaker. */
-    if (mCallMode == eCallMode_None)
-        pauseMedia(false);
-    else
-        mResumeMediaAfterCall = false;
+     * off, out of range) would otherwise drop the music onto the speaker.
+     * With headphones in, the music moved to them - because they were
+     * plugged in after the headset connected, or because the headset went
+     * and they are what is left - and goes on there. */
+    if (!jackPlugged())
+    {
+        if (mCallMode == eCallMode_None)
+            pauseMedia(false);
+        else
+            mResumeMediaAfterCall = false;
+    }
 
     /* ... and leaving puts a video call back on the loudspeaker. */
     if (mCallMode != eCallMode_None)

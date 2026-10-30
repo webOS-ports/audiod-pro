@@ -24,6 +24,7 @@
 #include "moduleFactory.h"
 #include "moduleManager.h"
 #include "deviceRoutingConfigParser.h"
+#include "outputChoice.h"
 
 #define DEFAULT_ONE_DISPLAY_ID 0
 #define DEFAULT_TWO_DISPLAY_ID 1
@@ -95,6 +96,7 @@ class AudioRouter : public ModuleInterface
         utils::mapMultipleDeviceInfo mMutipleInputInfo;
 
         std::list<BTInfo> mBTDeviceList;
+        OutputChoice::ConnectOrder mOutputConnectOrder;
         utils::mapSoundDevicesInfo mSoundOutputDeviceInfo;
         utils::mapSoundDevicesInfo mSoundInputDeviceInfo;
 
@@ -110,6 +112,7 @@ class AudioRouter : public ModuleInterface
             const std::string &display, utils::EMIXER_TYPE mixerType);
         void resetInputDeviceRouting(const std::string &deviceName, const int &priority,\
             const std::string &display, utils::EMIXER_TYPE mixerType);
+        bool markOutputConnected(const std::string& display, const std::string& deviceName);
         void updateDeviceStatus(const std::string& display, const std::string& deviceName,\
             const bool& isConnected, bool const& isActive, const bool& isOutput);
         void printDeviceInfo(const bool& isOutput);

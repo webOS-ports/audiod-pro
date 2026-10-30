@@ -41,6 +41,8 @@
                     "maxVolume":100,
                     "display":"display1",
                     "priority":3,
+                    "removable":true,
+                    "sink":"pcm_output",
                     "multipleSoundOut":false,
                     "deviceType":"internal",
                     "volumeSync":[
@@ -55,6 +57,7 @@
                     "maxVolume":100,
                     "display":"display1",
                     "priority":1,
+                    "removable":true,
                     "multipleSoundOut":false,
                     "deviceType":"external",
                     "volumeSync":[
@@ -69,6 +72,7 @@
                     "maxVolume":100,
                     "display":"display1",
                     "priority":2,
+                    "removable":true,
                     "multipleSoundOut":false,
                     "deviceType":"usb",
                     "maxDeviceCount":2,

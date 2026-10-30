@@ -22,9 +22,10 @@
 # which output a volume request moves (volumeTarget), when an alert lowers
 # the music (duckPolicy), what a WAV file's header says about the sound
 # playSound plays (wavHeader), stopping on SIGTERM within a deadline
-# (shutdownGuard), and what is sent to PulseAudio again after it restarted:
-# the cards (cardTable) and the outputs' volumes and mutes (pulseReplay),
-# and what a message to module-palm-policy holds (pulseMessage).
+# (shutdownGuard), which output the audio goes to (outputChoice), and
+# what is sent to PulseAudio again after it restarted: the cards
+# (cardTable) and the outputs' volumes and mutes (pulseReplay), and what a
+# message to module-palm-policy holds (pulseMessage).
 
 find_package(GTest REQUIRED)
 
@@ -39,6 +40,7 @@ add_executable(audiod-tests
     ${CMAKE_SOURCE_DIR}/src/modules/audioPolicyManager/duckPolicy.cpp
     ${CMAKE_SOURCE_DIR}/src/wavHeader.cpp
     ${CMAKE_SOURCE_DIR}/src/shutdownGuard.cpp
+    ${CMAKE_SOURCE_DIR}/src/modules/audioRouter/outputChoice.cpp
     test_btstate.cpp
     test_callstate.cpp
     test_ringstate.cpp
@@ -50,13 +52,15 @@ add_executable(audiod-tests
     test_shutdownguard.cpp
     test_cardtable.cpp
     test_pulsereplay.cpp
-    test_pulsemessage.cpp)
+    test_pulsemessage.cpp
+    test_outputchoice.cpp)
 target_include_directories(audiod-tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src/modules/bluetoothManager
     ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager
     ${CMAKE_SOURCE_DIR}/src/modules/masterVolumeManager
     ${CMAKE_SOURCE_DIR}/src/modules/audioPolicyManager
     ${CMAKE_SOURCE_DIR}/src/modules/deviceManager
+    ${CMAKE_SOURCE_DIR}/src/modules/audioRouter
     ${CMAKE_SOURCE_DIR}/include)
 target_compile_options(audiod-tests PRIVATE -Wall -Wextra)
 target_link_libraries(audiod-tests GTest::gtest GTest::gtest_main pthread)

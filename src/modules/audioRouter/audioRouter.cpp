@@ -413,6 +413,24 @@ void AudioRouter::setBTDeviceRouting(const std::string &deviceName)
     }
 }
 
+bool AudioRouter::markOutputConnected(const std::string& display, const std::string& deviceName)
+{
+    auto it = mSoundOutputInfo.find(display);
+    if (it == mSoundOutputInfo.end())
+        return false;
+    for (auto &deviceInfo : it->second)
+    {
+        if (deviceName == deviceInfo.deviceName)
+        {
+            const bool wasConnected = deviceInfo.isConnected;
+            deviceInfo.connectedAt = mOutputConnectOrder.stamp(wasConnected, deviceInfo.connectedAt);
+            deviceInfo.isConnected = true;
+            return wasConnected;
+        }
+    }
+    return false;
+}
+
 void AudioRouter::setOutputDeviceRouting(const std::string &deviceName, const int &priority,\
     const std::string &display, utils::EMIXER_TYPE mixerType)
 {
@@ -420,13 +438,22 @@ void AudioRouter::setOutputDeviceRouting(const std::string &deviceName, const in
         "setOutputDeviceRouting deviceName:%s priority:%d display:%s mixerType:%d",\
         deviceName.c_str(), priority, display.c_str(), (int)mixerType);
     std::string activeDevice = getActiveDevice(display, true);
+    /* Which output has the audio is decided by outputChoice.h: the
+     * removable output connected last, else the best priority. A device
+     * reported again while still marked connected keeps its place, and is
+     * routed again if it is the one in use. When PulseAudio goes away
+     * eventMixerStatus marks every output disconnected, so after a restart
+     * they take their places in the order they are reported again. */
+    markOutputConnected(display, deviceName);
+    const std::string chosen = getPriorityDevice(display, true);
     bool setStatus = false;
-    if (priority < getPriority(display, activeDevice, true))
+    if (chosen == deviceName)
     {
         if (nullptr != mObjAudioMixer)
         {
             updateDeviceStatus(display, deviceName, true, true, true);
-            updateDeviceStatus(display, activeDevice, true, false, true);
+            if (!activeDevice.empty() && activeDevice != deviceName)
+                updateDeviceStatus(display, activeDevice, true, false, true);
 
             for (const auto &it:mSoundOutputInfo)
             {
@@ -459,6 +486,13 @@ void AudioRouter::resetOutputDeviceRouting(const std::string &deviceName, const 
         "resetOutputDeviceRouting deviceName:%s mixerType:%d",\
         deviceName.c_str(), (int)mixerType);
     updateDeviceStatus(display, deviceName, false, false, true);
+    auto outputs = mSoundOutputInfo.find(display);
+    if (outputs != mSoundOutputInfo.end())
+    {
+        for (auto &deviceInfo : outputs->second)
+            if (deviceName == deviceInfo.deviceName)
+                deviceInfo.connectedAt = 0;
+    }
 
     if (nullptr != mObjAudioMixer)
     {
@@ -562,6 +596,14 @@ std::string AudioRouter::getActualOutputDevice(const std::string &deviceName)
         mappedName.append(".a2dp_sink");
         return mappedName;
     }
+    for (const auto &display : mSoundOutputInfo)
+    {
+        for (const auto &deviceInfo : display.second)
+        {
+            if (deviceInfo.deviceName == deviceName && !deviceInfo.sinkName.empty())
+                return deviceInfo.sinkName;
+        }
+    }
     PM_LOG_INFO(MSGID_AUDIOROUTER, INIT_KVCOUNT,\
         "actual devcie is:%s", actualDeviceName.c_str());
     return actualDeviceName;
@@ -655,17 +697,18 @@ std::string AudioRouter::getPriorityDevice(const std::string& display, const boo
         auto it = mSoundOutputInfo.find(display);
         if (it != mSoundOutputInfo.end())
         {
+            std::vector<OutputChoice::Output> outputs;
             for (const auto &deviceInfo : it->second)
             {
-                if (deviceInfo.isConnected)
-                {
-                    if (deviceInfo.priority < priority)
-                    {
-                        deviceName = deviceInfo.deviceName;
-                        priority = deviceInfo.priority;
-                    }
-                }
+                OutputChoice::Output output;
+                output.name = deviceInfo.deviceName;
+                output.priority = deviceInfo.priority;
+                output.removable = deviceInfo.removable;
+                output.connected = deviceInfo.isConnected;
+                output.connectedAt = deviceInfo.connectedAt;
+                outputs.push_back(output);
             }
+            deviceName = OutputChoice::choose(outputs);
         }
     }
     else
@@ -985,6 +1028,12 @@ void AudioRouter::setDeviceRoutingInfo(const pbnjson::JValue& deviceRoutingInfo)
                 deviceInfo.priority = arrItem["priority"].asNumber<int>();
                 deviceInfo.deviceName = soundoutput;
                 deviceInfo.deviceNameDetail = soundoutput;
+                bool removable = false;
+                if (arrItem["removable"].asBool(removable) == CONV_OK)
+                    deviceInfo.removable = removable;
+                std::string sinkName;
+                if (arrItem["sink"].asString(sinkName) == CONV_OK)
+                    deviceInfo.sinkName = sinkName;
 
                 if (!multipleDevice) maxDeviceCount = 1;
 
