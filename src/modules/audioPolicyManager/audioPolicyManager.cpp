@@ -76,6 +76,7 @@ void AudioPolicyManager::eventSinkStatus(const std::string& source, const std::s
             payload = getStreamStatus(true);
             notifyGetStreamStatusSubscribers(payload);
             applyVolumePolicy(audioSink, streamType, priority);
+            updateDucking();
         }
         else if (utils::eSinkClosed == sinkStatus)
         {
@@ -86,6 +87,7 @@ void AudioPolicyManager::eventSinkStatus(const std::string& source, const std::s
             notifyGetStreamStatusSubscribers(payload);
             removeVolumePolicy(audioSink, streamType, priority);
             removeSinkInput(trackId,sinkIndex, getStreamType(audioSink));
+            updateDucking();
         }
         else
             PM_LOG_WARNING(MSGID_POLICY_MANAGER, INIT_KVCOUNT,\
@@ -202,7 +204,7 @@ void AudioPolicyManager::addSinkInput(const std::string &trackId, const int &sin
                 PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT,\
                     "sink found");
                 elements.sinkInputIndex = sinkIndex;
-                int effectiveVolume = (getCurrentVolume(sink)*elements.volume)/100;
+                int effectiveVolume = duckedVolume(getSinkType(sink), (getCurrentVolume(sink)*elements.volume)/100);
                 //apply initial volume
                 mObjAudioMixer->programTrackVolume(getSinkType(sink), sinkIndex, effectiveVolume, nullptr, nullptr, nullptr, nullptr);
             }
@@ -224,7 +226,7 @@ void AudioPolicyManager::addSinkInput(const std::string &trackId, const int &sin
         stAppVolumeInfo.volume = MAX_VOLUME;
         stAppVolumeInfo.sinkInputIndex = sinkIndex;
         mTrackVolumeInfo[DEFAULT_TRACK_ID].push_back(stAppVolumeInfo);
-        int effectiveVolume = (getCurrentVolume(sink)*MAX_VOLUME)/100;
+        int effectiveVolume = duckedVolume(getSinkType(sink), (getCurrentVolume(sink)*MAX_VOLUME)/100);
         //apply initial volume
         mObjAudioMixer->programTrackVolume(getSinkType(sink), sinkIndex, effectiveVolume, nullptr, nullptr, nullptr, nullptr);
 
@@ -947,6 +949,7 @@ bool AudioPolicyManager::setVolume(EVirtualAudioSink audioSink, const int& volum
                             PM_LOG_DEBUG("AudioPolicyManager : programTrackVolume: trackId found, use actuial track volume");
                             effectiveVolume = (elements.volume * volume)/100;
                         }
+                        effectiveVolume = duckedVolume(audioSink, effectiveVolume);
                         PM_LOG_DEBUG("AudioPolicyManager : programTrackVolume:  trackId:%s, effective vol : %d, sink : %d, sinkindex:%d",
                             items.first.c_str(),effectiveVolume, (int)audioSink, elements.sinkInputIndex);
                         returnStatus = mObjAudioMixer->programTrackVolume(audioSink, elements.sinkInputIndex, effectiveVolume, lshandle, message, ctx, cb);
@@ -1490,7 +1493,69 @@ bool AudioPolicyManager::setStreamMute(const std::string& streamType, const bool
 
     updateMuteStatus(streamType, mute);
     notifyGetStreamStatusSubscribers(getStreamStatus(streamType, true));
+    updateDucking();
     return true;
+}
+
+void AudioPolicyManager::setRingerOn(bool ringerOn)
+{
+    mRingerOn = ringerOn;
+    updateDucking();
+}
+
+int AudioPolicyManager::duckedVolume(EVirtualAudioSink audioSink, int volume)
+{
+    if (!DuckPolicy::isDuckable(getStreamType(audioSink)))
+        return volume;
+    return DuckPolicy::scaled(volume, mDuckPercent);
+}
+
+void AudioPolicyManager::updateDucking()
+{
+    if (!mObjAudioMixer)
+        return;
+    std::vector<DuckPolicy::ActiveStream> active;
+    for (const auto &sink : mObjAudioMixer->getActiveStreams())
+    {
+        const std::string streamType = getStreamType(sink);
+        active.push_back({streamType, 0 != getCurrentSinkMuteStatus(streamType)});
+    }
+    const int target = DuckPolicy::targetPercent(DuckPolicy::shouldDuck(active, mRingerOn));
+    if (target == mDuckTarget)
+        return;
+    PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT,
+        "updateDucking: music %d%% -> %d%%", mDuckPercent, target);
+    mDuckTarget = target;
+    if (!mDuckTimer)
+        mDuckTimer = g_timeout_add(DuckPolicy::kRampStepMs, duckRampStep, this);
+}
+
+gboolean AudioPolicyManager::duckRampStep(gpointer data)
+{
+    AudioPolicyManager *self = static_cast<AudioPolicyManager*>(data);
+    self->mDuckPercent = DuckPolicy::nextPercent(self->mDuckPercent, self->mDuckTarget);
+    self->applyDuckPercent();
+    if (self->mDuckPercent != self->mDuckTarget)
+        return G_SOURCE_CONTINUE;
+    self->mDuckTimer = 0;
+    return G_SOURCE_REMOVE;
+}
+
+/* Puts the music back at its own volume - the policy volume while a call or
+ * another stream holds it down - times the ducking share, which setVolume
+ * applies. */
+void AudioPolicyManager::applyDuckPercent()
+{
+    for (const auto &elements : mVolumePolicyInfo)
+    {
+        // setVolume walks the stream's open sink inputs; with none it does
+        // nothing, so no need to ask whether the stream is active.
+        if (!DuckPolicy::isDuckable(elements.streamType) || utils::eMixerNone == elements.mixerType)
+            continue;
+        const int volume = elements.isPolicyInProgress ? elements.policyVolume : elements.currentVolume;
+        setVolume(getSinkType(elements.streamType), volume, elements.mixerType,
+                  nullptr, nullptr, nullptr, nullptr);
+    }
 }
 
 bool AudioPolicyManager::getStreamMute(const std::string& streamType)
@@ -2963,7 +3028,11 @@ AudioPolicyManager* AudioPolicyManager::getAudioPolicyManagerInstance()
 
 AudioPolicyManager::AudioPolicyManager(ModuleConfig* const pConfObj):mObjModuleManager(nullptr),\
                                                                      mObjPolicyInfoParser(nullptr),\
-                                                                     mObjAudioMixer(nullptr)
+                                                                     mObjAudioMixer(nullptr),\
+                                                                     mRingerOn(true),\
+                                                                     mDuckPercent(DuckPolicy::targetPercent(false)),\
+                                                                     mDuckTarget(DuckPolicy::targetPercent(false)),\
+                                                                     mDuckTimer(0)
 {
     PM_LOG_DEBUG("AudioPolicyManager: constructor");
     mObjModuleManager = ModuleManager::getModuleManagerInstance();
@@ -2985,6 +3054,8 @@ AudioPolicyManager::AudioPolicyManager(ModuleConfig* const pConfObj):mObjModuleM
 AudioPolicyManager::~AudioPolicyManager()
 {
     PM_LOG_DEBUG("AudioPolicyManager: destructor");
+    if (mDuckTimer)
+        g_source_remove(mDuckTimer);
     if (mObjPolicyInfoParser)
     {
         delete mObjPolicyInfoParser;

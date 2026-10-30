@@ -2513,6 +2513,9 @@ bool PalmLegacyManager::_setRingerSwitch(LSHandle *sh, LSMessage *message, void 
          * assumes has happened. */
         if (policy && ringtone && ringtone->streamType)
             policy->setStreamMute(ringtone->streamType, !ringerOn);
+        /* And, as on 2.x, alerts only lower the music with the switch on. */
+        if (policy)
+            policy->setRingerOn(ringerOn);
         self->notifyStatusSubscribers();
     }
 

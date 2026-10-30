@@ -132,6 +132,7 @@ SET (modules_files
         src/modules/masterVolumeManager/volumeTarget.cpp
         src/modules/deviceManager/udevDeviceManager.cpp
         src/modules/audioPolicyManager/audioPolicyManager.cpp
+        src/modules/audioPolicyManager/duckPolicy.cpp
         src/modules/audioPolicyManager/volumePolicyInfoParser.cpp
         src/modules/bluetoothManager/bluetoothManager.cpp
         src/modules/bluetoothManager/btState.cpp
