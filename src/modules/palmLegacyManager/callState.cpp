@@ -121,10 +121,15 @@ bool CallState::isUsbOutput(const std::string &name)
     return name.compare(0, 11, "usb_speaker") == 0;
 }
 
+bool CallState::privateOutput(const std::string &sink, bool jackPlugged)
+{
+    return isBluetoothOutput(sink) || isUsbOutput(sink) || jackPlugged;
+}
+
 CallState::Unplug CallState::outputMoved(ECallMode mode, const std::string &from,
                                          const std::string &to, bool jackPlugged)
 {
-    if (!isUsbOutput(from) || isUsbOutput(to))
+    if (from == to || !privateOutput(from, false))
         return Unplug{};
-    return unplugged(mode, isBluetoothOutput(to) || jackPlugged);
+    return unplugged(mode, privateOutput(to, jackPlugged));
 }

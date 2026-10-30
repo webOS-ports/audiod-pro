@@ -360,16 +360,53 @@ TEST(CallState, PullingTheUsbHeadsetLeavesOtherHeadsetsPlaying)
     }
 }
 
-TEST(CallState, OnlyLosingAUsbHeadsetIsAUsbUnplug)
+TEST(CallState, OnlyLosingAHeadsetIsAnUnplug)
 {
     for (const CallState::Unplug &u :
          {CallState::outputMoved(eCallMode_None, "", "usb_speaker0", false),
           CallState::outputMoved(eCallMode_None, "pcm_output", "usb_speaker0", false),
           CallState::outputMoved(eCallMode_None, "usb_speaker0", "usb_speaker0", false),
           CallState::outputMoved(eCallMode_None, "pcm_output", "pcm_output", false),
-          CallState::outputMoved(eCallMode_None, "bluez_sink.02_00_00_00_00_01.a2dp_sink", "pcm_output", false)})
+          CallState::outputMoved(eCallMode_None, "", "pcm_output", false),
+          CallState::outputMoved(eCallMode_None, "pcm_output", "bluez_sink.02_00_00_00_00_01.a2dp_sink", false)})
     {
         EXPECT_FALSE(u.pauseMedia);
         EXPECT_FALSE(u.keepPausedAfterCall);
+    }
+}
+
+TEST(CallState, KnowsWhichOutputsArePrivate)
+{
+    EXPECT_TRUE(CallState::privateOutput("bluez_sink.02_00_00_00_00_01.a2dp_sink", false));
+    EXPECT_TRUE(CallState::privateOutput("usb_speaker1", false));
+    EXPECT_TRUE(CallState::privateOutput("pcm_output", true));
+    EXPECT_FALSE(CallState::privateOutput("pcm_output", false));
+    EXPECT_FALSE(CallState::privateOutput("", false));
+}
+
+// A headset going pauses the music only when it would otherwise go on out
+// of the loudspeaker, whichever headset it was and whichever output the
+// router (OutputChoice: the removable output connected before it) falls
+// back to: a Bluetooth headset, a USB one, the jack, or the speaker.
+TEST(CallState, AHeadsetGoingPausesOnlyWhenTheMusicWouldPlayOutLoud)
+{
+    const std::string bt = "bluez_sink.02_00_00_00_00_01.a2dp_sink";
+    const std::string bt2 = "bluez_sink.00_1B_66_A1_2B_3C.a2dp_sink";
+    for (const std::string &from : {bt, std::string("usb_speaker0")})
+    {
+        for (auto mode : {eCallMode_None, eCallMode_Carrier, eCallMode_Voip})
+        {
+            for (const CallState::Unplug &u :
+                 {CallState::outputMoved(mode, from, bt2, false),
+                  CallState::outputMoved(mode, from, "usb_speaker1", false),
+                  CallState::outputMoved(mode, from, "pcm_output", true)})
+            {
+                EXPECT_FALSE(u.pauseMedia) << from;
+                EXPECT_FALSE(u.keepPausedAfterCall) << from;
+            }
+            const CallState::Unplug loud = CallState::outputMoved(mode, from, "pcm_output", false);
+            EXPECT_EQ(loud.pauseMedia, mode == eCallMode_None) << from;
+            EXPECT_EQ(loud.keepPausedAfterCall, mode != eCallMode_None) << from;
+        }
     }
 }
