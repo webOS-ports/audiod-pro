@@ -109,6 +109,21 @@ public:
     //! Nothing, when Bluetooth carries the audio: the plug was not playing it.
     static Unplug unplugged(ECallMode mode, bool bluetoothAudio);
 
+    //! Whether name is an A2DP sink. PulseAudio 17 names them
+    //! bluez_sink.<addr>.<profile>; newer ones use bluez_output.
+    static bool isBluetoothOutput(const std::string &name);
+    //! Whether name is a USB headset's sink. module-palm-policy names them
+    //! after the routing config's usb_speaker entry: usb_speaker0, usb_speaker1.
+    static bool isUsbOutput(const std::string &name);
+
+    //! What has to happen when the active output moves from one sink to
+    //! another, for a USB headset: going from it to the loudspeaker is an
+    //! unplug, the same as pulling the jack. Going to another headset - a
+    //! Bluetooth one, a second USB one, or the jack (jackPlugged: the built-in
+    //! output now plays into the plug) - is not; the music stays private.
+    static Unplug outputMoved(ECallMode mode, const std::string &from,
+                              const std::string &to, bool jackPlugged);
+
 private:
     struct Calls
     {

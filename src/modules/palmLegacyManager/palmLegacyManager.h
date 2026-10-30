@@ -174,6 +174,9 @@ class PalmLegacyManager : public ModuleInterface
         bool mJackSeenUnplugged;
         std::string mBtAudioSink;
         std::string mBtAudioName;
+        /* The USB headset's sink (usb_speaker0, ...) while it carries the
+         * audio, "" otherwise; followed through the active output as well. */
+        std::string mUsbAudioSink;
 
         /* Media this module paused for a call, to be resumed when it ends.
          * mMediaGeneration invalidates the replies of a pause still in flight
@@ -247,6 +250,7 @@ class PalmLegacyManager : public ModuleInterface
         static void paBtSinkCb(pa_context *c, const pa_sink_info *info, int eol, void *userdata);
         void setJackState(EJackState state);
         void setActiveOutput(const std::string &sinkName);
+        void followUsbOutput(const std::string &sinkName);
         bool jackPlugged() const
         {
             return mJackState == eJack_Headphones || mJackState == eJack_Headset;

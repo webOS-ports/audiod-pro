@@ -311,3 +311,65 @@ TEST(CallState, UnpluggingLeavesBluetoothAudioAlone)
         EXPECT_FALSE(u.keepPausedAfterCall);
     }
 }
+
+TEST(CallState, KnowsTheHeadsetSinks)
+{
+    EXPECT_TRUE(CallState::isUsbOutput("usb_speaker0"));
+    EXPECT_TRUE(CallState::isUsbOutput("usb_speaker1"));
+    EXPECT_FALSE(CallState::isUsbOutput("usb_mic0"));
+    EXPECT_FALSE(CallState::isUsbOutput("pcm_output"));
+    EXPECT_FALSE(CallState::isUsbOutput(""));
+    EXPECT_TRUE(CallState::isBluetoothOutput("bluez_sink.02_00_00_00_00_01.a2dp_sink"));
+    EXPECT_TRUE(CallState::isBluetoothOutput("bluez_output.02_00_00_00_00_01.1"));
+    EXPECT_FALSE(CallState::isBluetoothOutput("bluetooth_speaker0"));
+    EXPECT_FALSE(CallState::isBluetoothOutput("pcm_output"));
+    EXPECT_FALSE(CallState::isBluetoothOutput(""));
+}
+
+TEST(CallState, PullingTheUsbHeadsetPausesTheMusic)
+{
+    // Back on the loudspeaker: the same as pulling the jack.
+    const CallState::Unplug u = CallState::outputMoved(eCallMode_None, "usb_speaker0", "pcm_output", false);
+    EXPECT_TRUE(u.pauseMedia);
+    EXPECT_FALSE(u.keepPausedAfterCall);
+}
+
+TEST(CallState, PullingTheUsbHeadsetInACallKeepsTheMusicPausedAfterIt)
+{
+    for (auto mode : {eCallMode_Carrier, eCallMode_Voip})
+    {
+        const CallState::Unplug u = CallState::outputMoved(mode, "usb_speaker0", "pcm_output", false);
+        EXPECT_FALSE(u.pauseMedia);
+        EXPECT_TRUE(u.keepPausedAfterCall);
+    }
+}
+
+TEST(CallState, PullingTheUsbHeadsetLeavesOtherHeadsetsPlaying)
+{
+    for (auto mode : {eCallMode_None, eCallMode_Carrier, eCallMode_Voip})
+    {
+        // On to a Bluetooth headset, a second USB one, or the jack.
+        for (const CallState::Unplug &u :
+             {CallState::outputMoved(mode, "usb_speaker0", "bluez_sink.02_00_00_00_00_01.a2dp_sink", false),
+              CallState::outputMoved(mode, "usb_speaker0", "usb_speaker1", false),
+              CallState::outputMoved(mode, "usb_speaker0", "pcm_output", true)})
+        {
+            EXPECT_FALSE(u.pauseMedia);
+            EXPECT_FALSE(u.keepPausedAfterCall);
+        }
+    }
+}
+
+TEST(CallState, OnlyLosingAUsbHeadsetIsAUsbUnplug)
+{
+    for (const CallState::Unplug &u :
+         {CallState::outputMoved(eCallMode_None, "", "usb_speaker0", false),
+          CallState::outputMoved(eCallMode_None, "pcm_output", "usb_speaker0", false),
+          CallState::outputMoved(eCallMode_None, "usb_speaker0", "usb_speaker0", false),
+          CallState::outputMoved(eCallMode_None, "pcm_output", "pcm_output", false),
+          CallState::outputMoved(eCallMode_None, "bluez_sink.02_00_00_00_00_01.a2dp_sink", "pcm_output", false)})
+    {
+        EXPECT_FALSE(u.pauseMedia);
+        EXPECT_FALSE(u.keepPausedAfterCall);
+    }
+}

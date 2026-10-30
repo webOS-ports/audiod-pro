@@ -88,6 +88,7 @@ PalmLegacyManager::PalmLegacyManager(ModuleConfig* const pConfObj) :
     mJackSeenUnplugged(false),
     mBtAudioSink(""),
     mBtAudioName(""),
+    mUsbAudioSink(""),
     mResumeMediaAfterCall(false),
     mMediaGeneration(0),
     mPaMainloop(nullptr),
@@ -1311,11 +1312,12 @@ void PalmLegacyManager::setJackState(EJackState state)
      * the loudspeaker. Only a real unplug counts -- going from unknown to
      * unplugged at start-up is not one. During a call there is nothing
      * playing to pause, but resuming afterwards would now be out loud. With
-     * Bluetooth carrying the audio the plug was not playing anything, and
-     * the music goes on in the headset. */
+     * a Bluetooth or USB headset carrying the audio the plug was not playing
+     * anything, and the music goes on in that headset. */
     if (wasPlugged && !jackPlugged())
     {
-        const CallState::Unplug unplug = CallState::unplugged(mCallMode, !mBtAudioSink.empty());
+        const CallState::Unplug unplug = CallState::unplugged(mCallMode,
+            !mBtAudioSink.empty() || !mUsbAudioSink.empty());
         if (unplug.pauseMedia)
             pauseMedia(false);
         if (unplug.keepPausedAfterCall)
@@ -1328,14 +1330,36 @@ void PalmLegacyManager::setJackState(EJackState state)
 
 static bool isBluetoothSink(const std::string &name)
 {
-    /* PulseAudio 17 names A2DP sinks bluez_sink.<addr>.<profile>; newer ones
-     * use bluez_output. */
-    return name.compare(0, 11, "bluez_sink.") == 0 ||
-           name.compare(0, 13, "bluez_output.") == 0;
+    return CallState::isBluetoothOutput(name);
+}
+
+/* A USB headset is a sink of its own (usb_speaker0, ...), which audioRouter
+ * makes the active output while it is plugged in. Pulling it is an unplug
+ * like the jack's when the music would carry on out of the loudspeaker;
+ * moving on to Bluetooth or the jack is not. */
+void PalmLegacyManager::followUsbOutput(const std::string &sinkName)
+{
+    if (sinkName == mUsbAudioSink ||
+        (!CallState::isUsbOutput(sinkName) && mUsbAudioSink.empty()))
+        return;
+
+    const CallState::Unplug unplug = CallState::outputMoved(mCallMode, mUsbAudioSink,
+                                                            sinkName, jackPlugged());
+    PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+        "USB audio %s -> %s", mUsbAudioSink.empty() ? "none" : mUsbAudioSink.c_str(),
+        sinkName.c_str());
+    mUsbAudioSink = CallState::isUsbOutput(sinkName) ? sinkName : std::string();
+    if (unplug.pauseMedia)
+        pauseMedia(false);
+    if (unplug.keepPausedAfterCall)
+        mResumeMediaAfterCall = false;
+    notifyStatusSubscribers();
 }
 
 void PalmLegacyManager::setActiveOutput(const std::string &sinkName)
 {
+    followUsbOutput(sinkName);
+
     if (isBluetoothSink(sinkName))
     {
         if (sinkName == mBtAudioSink)
@@ -1378,8 +1402,9 @@ void PalmLegacyManager::setActiveOutput(const std::string &sinkName)
      * off, out of range) would otherwise drop the music onto the speaker.
      * With headphones in, the music moved to them - because they were
      * plugged in after the headset connected, or because the headset went
-     * and they are what is left - and goes on there. */
-    if (!jackPlugged())
+     * and they are what is left - and goes on there. A USB headset taking
+     * over keeps it private as well. */
+    if (!jackPlugged() && !CallState::isUsbOutput(sinkName))
     {
         if (mCallMode == eCallMode_None)
             pauseMedia(false);
@@ -1733,6 +1758,7 @@ pbnjson::JValue PalmLegacyManager::rootStatus() const
     reply.put("headsetState", jackNames[mJackState]);
     reply.put("bluetoothAudio", !mBtAudioSink.empty());
     reply.put("bluetoothAudioName", mBtAudioName);
+    reply.put("usbAudio", !mUsbAudioSink.empty());
     return reply;
 }
 
