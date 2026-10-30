@@ -41,9 +41,9 @@ std::string OutputChoice::choose(const std::vector<Output> &outputs)
     return best ? best->name : std::string();
 }
 
-std::uint64_t OutputChoice::ConnectOrder::stamp(bool wasConnected, std::uint64_t current)
+std::uint64_t OutputChoice::ConnectOrder::stamp(std::uint64_t current)
 {
-    if (wasConnected && current != 0)
+    if (current != 0)
         return current;
     return ++mLast;
 }

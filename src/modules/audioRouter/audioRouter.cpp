@@ -35,6 +35,9 @@ void AudioRouter::eventMixerStatus(bool mixerStatus, utils::EMIXER_TYPE mixerTyp
         (int)mixerStatus, (int)mixerType);
     if (!mixerStatus && (utils::ePulseMixer == mixerType))
     {
+        /* The sinks went with PulseAudio and are announced again by the
+         * next one. connectedAt stays: the order the outputs were
+         * connected in is the user's, not PulseAudio's (outputChoice.h). */
         for (auto& it : mSoundOutputInfo)
         {
             for (auto& deviceInfo : it.second)
@@ -423,7 +426,7 @@ bool AudioRouter::markOutputConnected(const std::string& display, const std::str
         if (deviceName == deviceInfo.deviceName)
         {
             const bool wasConnected = deviceInfo.isConnected;
-            deviceInfo.connectedAt = mOutputConnectOrder.stamp(wasConnected, deviceInfo.connectedAt);
+            deviceInfo.connectedAt = mOutputConnectOrder.stamp(deviceInfo.connectedAt);
             deviceInfo.isConnected = true;
             return wasConnected;
         }
@@ -440,10 +443,12 @@ void AudioRouter::setOutputDeviceRouting(const std::string &deviceName, const in
     std::string activeDevice = getActiveDevice(display, true);
     /* Which output has the audio is decided by outputChoice.h: the
      * removable output connected last, else the best priority. A device
-     * reported again while still marked connected keeps its place, and is
-     * routed again if it is the one in use. When PulseAudio goes away
-     * eventMixerStatus marks every output disconnected, so after a restart
-     * they take their places in the order they are reported again. */
+     * reported again keeps its place, and is routed again if it is the one
+     * in use. That includes the outputs eventMixerStatus marked
+     * disconnected when PulseAudio went away: they keep their connect
+     * stamps, so after a restart they take their old places whatever order
+     * PulseAudio announces them in. Only a real disconnect
+     * (resetOutputDeviceRouting) drops the stamp. */
     markOutputConnected(display, deviceName);
     const std::string chosen = getPriorityDevice(display, true);
     bool setStatus = false;
