@@ -675,11 +675,11 @@ bool AudioMixer::playSystemSound(const char *snd, EVirtualAudioSink sink)
 }
 
 std::string AudioMixer::playSound(const char *snd, EVirtualAudioSink sink, \
-               const char *format, int rate, int channels)
+               const char *format, int rate, int channels, unsigned leadInMs)
 {
     PM_LOG_DEBUG("AudioMixer: playSound");
     if (mObjPulseAudioMixer)
-        return mObjPulseAudioMixer->playSound(snd, sink, format, rate, channels);
+        return mObjPulseAudioMixer->playSound(snd, sink, format, rate, channels, leadInMs);
     else
     {
         PM_LOG_ERROR(MSGID_AUDIO_MIXER, INIT_KVCOUNT,\

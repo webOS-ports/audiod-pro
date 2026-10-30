@@ -31,6 +31,7 @@
 #include "moduleManager.h"
 #include "callState.h"
 #include "ringState.h"
+#include "paReconnect.h"
 
 /*
  * palmLegacyManager -- serves the Palm-era com.palm.audio API on top of audiod.
@@ -195,6 +196,10 @@ class PalmLegacyManager : public ModuleInterface
         pa_glib_mainloop *mPaMainloop;
         pa_context *mPaContext;
         bool mPaReady;
+        /* A failed or terminated context stays dead, so a PulseAudio restart
+         * is followed by opening a new one once mPaReconnectTimer fires. */
+        PaReconnect mPaReconnect;
+        guint mPaReconnectTimer;
 
         /* One in-flight routing request. Heap-allocated because the PulseAudio
          * card/sink/source walk is a chain of async callbacks. mPendingCards
@@ -218,6 +223,10 @@ class PalmLegacyManager : public ModuleInterface
         bool registerLegacyCategories(LSHandle *handle);
 
         bool connectToPulse();
+        bool openPaContext();
+        void dropPaContext();
+        void schedulePaReconnect();
+        static gboolean paReconnectCb(gpointer userdata);
 
         static void paContextStateCb(pa_context *c, void *userdata);
         static void paCardInfoCb(pa_context *c, const pa_card_info *info, int eol, void *userdata);

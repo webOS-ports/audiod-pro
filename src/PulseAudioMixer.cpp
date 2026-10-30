@@ -1097,6 +1097,15 @@ PulseAudioMixer::_pulseStatus(GIOChannel *ch,
         ssize_t bytes = recv(sockfd, buffer, SIZE_MESG_TO_AUDIOD, 0);
 
         int HdrLen = sizeof(struct paudiodMsgHdr);
+        if (bytes == 0 || (bytes < 0 && errno != EAGAIN && errno != EINTR))
+        {
+            // Pulse closed the socket. The hang-up comes with readable data
+            // when it does, and returning here left the watch on: it fired
+            // again at once, for as long as Pulse was gone, and audiod never
+            // connected to it again.
+            _pulseGone(ch);
+            return;
+        }
         if (bytes < (ssize_t)HdrLen)
         {
             PM_LOG_ERROR(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT,\
@@ -1314,16 +1323,19 @@ PulseAudioMixer::_pulseStatus(GIOChannel *ch,
     }
 
     if (condition & G_IO_HUP)
-    {
-        PM_LOG_ERROR(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT, "%s: pulse server gone away", __FUNCTION__);
-        g_io_channel_shutdown (ch, FALSE, NULL);
+        _pulseGone(ch);
+}
 
-        mTimeout = cMinTimeout;
-        g_source_remove (mSourceID);
-        g_io_channel_unref(mChannel);
-        mChannel = NULL;
-        g_timeout_add (0, ::_timer, this);
-    }
+void PulseAudioMixer::_pulseGone(GIOChannel *ch)
+{
+    PM_LOG_ERROR(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT, "%s: pulse server gone away", __FUNCTION__);
+    g_io_channel_shutdown (ch, FALSE, NULL);
+
+    mTimeout = cMinTimeout;
+    g_source_remove (mSourceID);
+    g_io_channel_unref(mChannel);
+    mChannel = NULL;
+    g_timeout_add (0, ::_timer, this);
 }
 
 void PulseAudioMixer::outputStreamOpened (EVirtualAudioSink sink, int sinkIndex, std::string trackId)
@@ -1396,9 +1408,10 @@ bool PulseAudioMixer::playSystemSound(const char *snd, EVirtualAudioSink sink)
     return mPulseLink.play(snd, sink);
 }
 
-std::string PulseAudioMixer::playSound(const char *snd, EVirtualAudioSink sink, const char *format, int rate, int channels)
+std::string PulseAudioMixer::playSound(const char *snd, EVirtualAudioSink sink, const char *format, int rate, int channels,
+                                       unsigned leadInMs)
 {
-    return mPulseLink.play(snd, sink, format, rate, channels);
+    return mPulseLink.play(snd, sink, format, rate, channels, leadInMs);
 }
 
 bool PulseAudioMixer::controlPlayback(std::string playbackId, std::string requestType)

@@ -16,7 +16,6 @@
 
 #include <cstdio>
 #include <unistd.h>
-#include <signal.h>
 #include <cstdlib>
 #include <glib.h>
 #include <sys/time.h>
@@ -27,6 +26,7 @@
 #include "main.h"
 #include "messageUtils.h"
 #include "moduleManager.h"
+#include "shutdownGuard.h"
 
 #define CONFIG_DIR_PATH "/etc/palm/audiod"
 
@@ -44,10 +44,23 @@ static GMainLoop * gMainLoop = NULL;
 static const char* const logContextName = "AudioD";
 static const char* const logPrefix= "[audiod]";
 
-void
-term_handler(int signal)
+//! How long audiod takes to stop before it is ended: systemd waits for it
+//! before it restarts PulseAudio.
+static const std::chrono::milliseconds kShutdownDeadline(1000);
+
+static void
+quitMainLoop()
 {
     g_main_loop_quit(gMainLoop);
+}
+
+static void
+shutdownExpired()
+{
+    PM_LOG_WARNING(MSGID_SHUTDOWN, INIT_KVCOUNT,
+        "audiod did not stop within %lld ms, exiting now",
+        static_cast<long long>(kShutdownDeadline.count()));
+    _exit(EXIT_SUCCESS);
 }
 
 void
@@ -99,9 +112,6 @@ main(int argc, char **argv)
 {
     int opt;
     int niceme = 0;
-
-    signal(SIGTERM, term_handler);
-    signal(SIGINT, term_handler);
 
     if (argc > 1 && strcmp(argv[1], "--version") == 0)
     {
@@ -159,6 +169,12 @@ main(int argc, char **argv)
     setpriority(PRIO_PROCESS,getpid(),niceme);
 
     gMainLoop = g_main_loop_new(NULL, FALSE);
+
+    // SIGTERM and SIGINT stop the main loop, and end audiod if the shutdown
+    // is not done by the deadline.
+    ShutdownGuard shutdownGuard(quitMainLoop, shutdownExpired, kShutdownDeadline);
+    if (!shutdownGuard.catchSignals())
+        PM_LOG_ERROR(MSGID_STARTUP, INIT_KVCOUNT, "Could not catch SIGTERM and SIGINT");
 
     /**
      *  initialize the lunaservice and we want it before all the init

@@ -17,6 +17,7 @@
 #include "duckPolicy.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace DuckPolicy
 {
@@ -43,23 +44,53 @@ bool shouldDuck(const std::vector<ActiveStream> &active, bool ringerOn)
     });
 }
 
-int targetPercent(bool ducked)
+int levelForDb(double db)
 {
-    return ducked ? kDuckedPercent : 100;
+    const double below = db < 0 ? -db : db;
+    const long level = std::lround(below / kDbPerVolumeStep);
+    return static_cast<int>(std::min<long>(level, 98));
 }
 
-int nextPercent(int current, int target)
+int targetLevel(bool ducked, int duckLevel)
+{
+    return ducked ? duckLevel : 0;
+}
+
+int rampStep(int duckLevel)
+{
+    return std::max(1, (duckLevel + kRampSteps - 1) / kRampSteps);
+}
+
+int nextLevel(int current, int target, int step)
 {
     if (current < target)
-        return std::min(current + kRampStepPercent, target);
+        return std::min(current + step, target);
     if (current > target)
-        return std::max(current - kRampStepPercent, target);
+        return std::max(current - step, target);
     return target;
 }
 
-int scaled(int volume, int percent)
+int duckedVolume(int volume, int level)
 {
-    return (volume * percent) / 100;
+    if (volume <= 0)
+        return volume;
+    return std::max(volume - level, 1);
+}
+
+unsigned leadInMs(const std::string &streamType, bool ringerOn,
+                  int currentLevel, int duckLevel)
+{
+    if (!isDucking(streamType) || !ringerOn || currentLevel >= duckLevel)
+        return 0;
+    const int step = rampStep(duckLevel);
+    const int steps = (duckLevel - currentLevel + step - 1) / step;
+    return static_cast<unsigned>(steps + 1) * kRampStepMs;
+}
+
+size_t silenceBytes(unsigned ms, unsigned rate, unsigned frameBytes)
+{
+    const size_t frames = static_cast<size_t>(rate) * ms / 1000;
+    return frames * frameBytes;
 }
 
 }

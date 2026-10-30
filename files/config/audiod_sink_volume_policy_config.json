@@ -1,4 +1,5 @@
 {
+    "duckDb": -20,
     "streamDetails": [
         {
             "streamType": "palerts",

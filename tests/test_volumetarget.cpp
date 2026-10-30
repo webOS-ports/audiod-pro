@@ -100,3 +100,21 @@ TEST(VolumeTarget, KnowsTheBluetoothOutputs)
     EXPECT_FALSE(VolumeTarget::isBluetoothOutput("bluez_sink.74_1A_E0_20_8F_18.a2dp_sink"));
     EXPECT_FALSE(VolumeTarget::isBluetoothOutput(""));
 }
+
+TEST(VolumeTarget, GetVolumeReportsTheHeadsetThatCarriesTheAudio)
+{
+    // The volume manager missed the headset becoming active.
+    EXPECT_EQ(VolumeTarget::reported("", true), "bluetooth_speaker0");
+    EXPECT_EQ(VolumeTarget::reported("pcm_output", true), "bluetooth_speaker0");
+}
+
+TEST(VolumeTarget, GetVolumeReportsTheActiveOutputWithoutAHeadset)
+{
+    EXPECT_EQ(VolumeTarget::reported("pcm_output", false), "pcm_output");
+    EXPECT_EQ(VolumeTarget::reported("bluetooth_speaker0", false), "bluetooth_speaker0");
+}
+
+TEST(VolumeTarget, GetVolumeReportsThePhonesOwnWhenNothingIsActive)
+{
+    EXPECT_EQ(VolumeTarget::reported("", false), "pcm_output");
+}

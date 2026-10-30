@@ -127,6 +127,7 @@ SET (modules_files
         src/modules/palmLegacyManager/palmLegacyManager.cpp
         src/modules/palmLegacyManager/callState.cpp
         src/modules/palmLegacyManager/ringState.cpp
+        src/modules/palmLegacyManager/paReconnect.cpp
         src/modules/lunaEventSubscriber/lunaEventSubscriber.cpp
         src/modules/masterVolumeManager/OSEMasterVolumeManager.cpp
         src/modules/masterVolumeManager/volumeTarget.cpp

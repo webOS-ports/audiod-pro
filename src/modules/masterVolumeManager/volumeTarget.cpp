@@ -46,3 +46,12 @@ std::string VolumeTarget::output(const std::string &requested, const std::string
 
     return requested;
 }
+
+std::string VolumeTarget::reported(const std::string &active, bool bluetoothAudio)
+{
+    if (bluetoothAudio)
+        return kBluetoothOutput;
+    if (active.empty())
+        return kBuiltInOutput;
+    return active;
+}

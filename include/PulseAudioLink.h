@@ -139,7 +139,9 @@ class PlaybackThread
         ~PlaybackThread();
         PlaybackThread(const PlaybackThread &) = delete;
         PlaybackThread &operator=(const PlaybackThread &) = delete;
-        bool play(const char * samplename, const char * sink, const char * format, int rate, int channels);
+        //! leadInMs of silence play before the samples, on the open stream.
+        bool play(const char * samplename, const char * sink, const char * format, int rate, int channels,
+                  unsigned leadInMs = 0);
         bool pause();
         bool resume();
         bool stop();
@@ -151,6 +153,8 @@ class PlaybackThread
         std::atomic<bool> mDataAvailable;
         std::atomic<bool> mFinished;
         size_t mRemaining;          //!< bytes of samples still to play
+        size_t mLeadIn;             //!< bytes of silence to play before them
+        uint8_t mSilence;           //!< what a silent byte is in the stream's format
         pa_simple *mStream;
         std::mutex mStreamLock;     //!< mStream against its release by the thread
         bool playThread();
@@ -189,9 +193,9 @@ public:
     bool    play(const char * filename, const char * sink, const char * format, \
         int rate, int channels);
     std::string    playSound(const char * filename, const char * sink, const char * format, \
-        int rate, int channels);
+        int rate, int channels, unsigned leadInMs = 0);
     std::string    play(const char *snd,  EVirtualAudioSink sink, const char *format, \
-        int rate, int channels);
+        int rate, int channels, unsigned leadInMs = 0);
     bool controlPlayback(std::string playbackId, std::string requestType);
     std::string getPlaybackStatus(std::string playbackId);
 

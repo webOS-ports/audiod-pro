@@ -64,7 +64,7 @@ public:
     /// Play a system sound using Pulse's API
     bool playSystemSound(const char *snd, EVirtualAudioSink sink);
     std::string playSound(const char *snd, EVirtualAudioSink sink, \
-        const char *format, int rate, int channels);
+        const char *format, int rate, int channels, unsigned leadInMs = 0);
     bool controlPlayback(std::string playbackId, std::string requestType);
     std::string getPlaybackStatus(std::string playbackId);
     /// Pre-load system sound in Pulse, if necessary
@@ -92,6 +92,7 @@ public:
     /// These should really be private, but they're needed for global callbacks...
     bool _connectSocket();
     void _pulseStatus(GIOChannel * ch, GIOCondition condition, gpointer user_data);
+    void _pulseGone(GIOChannel * ch);
     void _timer();
 
     GIOChannel* mChannel;
