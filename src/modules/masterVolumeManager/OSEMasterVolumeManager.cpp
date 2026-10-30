@@ -15,6 +15,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "OSEMasterVolumeManager.h"
+#include "volumeTarget.h"
 
 #define GETSETTINGS "luna://com.webos.service.settings/getSystemSettings"
 #define SETSETTINGS "luna://com.webos.service.settings/setSystemSettings"
@@ -436,6 +437,16 @@ std::string OSEMasterVolumeManager::getMappedName (std::string deviceName)
     }
 }
 
+std::string OSEMasterVolumeManager::volumeTargetOf(const std::string &soundOutput)
+{
+    const std::string target = VolumeTarget::output(soundOutput, getActiveDevice(DISPLAY_ONE, true),
+                                                    getConnStatus(soundOutput, DISPLAY_ONE, true));
+    if (target != soundOutput)
+        PM_LOG_INFO(MSGID_CLIENT_MASTER_VOLUME_MANAGER, INIT_KVCOUNT,
+            "volume for %s goes to %s, the active output", soundOutput.c_str(), target.c_str());
+    return target;
+}
+
 std::string OSEMasterVolumeManager::getActualDeviceName (std::string mappedName)
 {
     PM_LOG_INFO(MSGID_CLIENT_MASTER_VOLUME_MANAGER, INIT_KVCOUNT, "OSEMasterVolumeManager: %s :%s",__FUNCTION__, mappedName.c_str());
@@ -470,6 +481,7 @@ void OSEMasterVolumeManager::setVolume(LSHandle *lshandle, LSMessage *message, v
 
     msg.get("soundOutput", soundOutput);
     msg.get("volume", volume);
+    soundOutput = volumeTargetOf(soundOutput);
 
     if (isValidSoundDevice(soundOutput, true))
     {
@@ -931,6 +943,9 @@ bool OSEMasterVolumeManager::_setVolumeCallBackPA(LSHandle *sh, LSMessage *reply
 
     OSEMasterVolumeManager* OSEMasterVolumeManagerObj = (OSEMasterVolumeManager*)envelope->context;
 
+    /* The message names what the client asked for; the volume is the
+     * output's setVolume moved. */
+    soundOutput = OSEMasterVolumeManagerObj->volumeTargetOf(soundOutput);
 
     if (soundOutput == "alsa")
         soundOutput = OSEMasterVolumeManagerObj->getActiveDevice(display, true);
@@ -2708,8 +2723,11 @@ void OSEMasterVolumeManager::deviceConnectOp(std::string deviceName, std::string
             envelope->context = this;
             envelope->isOutput = isOutput;
             PM_LOG_INFO(MSGID_CLIENT_MASTER_VOLUME_MANAGER, INIT_KVCOUNT,"//TODO : call mobjaudiomixer setvolume, with callback to notify master get volume");
+            /* PulseAudio knows the headset by its sink name, not as
+             * bluetooth_speaker0: sent that, the stored volume never reached
+             * the headset and it played at whatever the sink had - full. */
             if (isOutput)
-                AudioMixer::getAudioMixerInstance()->setVolume(deviceName.c_str(), volume, nullptr, nullptr, envelope, DBSetVoulumeCallbackPA);
+                AudioMixer::getAudioMixerInstance()->setVolume(getActualDeviceName(deviceName).c_str(), volume, nullptr, nullptr, envelope, DBSetVoulumeCallbackPA);
             else
                 AudioMixer::getAudioMixerInstance()->setMicVolume(deviceName.c_str(), volume, nullptr, nullptr, envelope, DBSetVoulumeCallbackPA);
         }

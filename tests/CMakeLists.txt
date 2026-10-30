@@ -17,7 +17,8 @@
 # Unit tests for the parts of audiod that stand on their own: the
 # Bluetooth manager's bookkeeping (btState) and the call state the legacy
 # manager routes and pauses media by (callState), and whether something is
-# ringing (ringState).
+# ringing (ringState), and which output a volume request moves
+# (volumeTarget).
 
 find_package(GTest REQUIRED)
 
@@ -25,12 +26,15 @@ add_executable(audiod-tests
     ${CMAKE_SOURCE_DIR}/src/modules/bluetoothManager/btState.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/callState.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/ringState.cpp
+    ${CMAKE_SOURCE_DIR}/src/modules/masterVolumeManager/volumeTarget.cpp
     test_btstate.cpp
     test_callstate.cpp
-    test_ringstate.cpp)
+    test_ringstate.cpp
+    test_volumetarget.cpp)
 target_include_directories(audiod-tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src/modules/bluetoothManager
-    ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager)
+    ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager
+    ${CMAKE_SOURCE_DIR}/src/modules/masterVolumeManager)
 target_compile_options(audiod-tests PRIVATE -Wall -Wextra)
 target_link_libraries(audiod-tests GTest::gtest GTest::gtest_main pthread)
 add_test(NAME audiod-tests COMMAND audiod-tests)
