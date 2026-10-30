@@ -16,9 +16,12 @@
 
 
 #include <unistd.h>
+#include <algorithm>
+#include <cstdint>
 #include <vector>
 
 #include "PulseAudioLink.h"
+#include "wavHeader.h"
 
 // pa_simple_cork() is an LG addition to libpulse-simple; it exists only in
 // webosose/pulseaudio-webos, and LuneOS builds against upstream PulseAudio.
@@ -277,8 +280,21 @@ bool PulseAudioLink::play(const char * samplename, const char * sink)
 
 std::string PulseAudioLink::playSound(const char * samplename, const char * sink, const char * format, int rate, int channels)
 {
+    // Sounds that have played to their end have let go of their stream;
+    // drop them here, as nobody asks for a notification to be stopped.
+    for (auto it = mMapAudioList.begin(); it != mMapAudioList.end(); )
+    {
+        if (it->second->isFinished())
+        {
+            delete it->second;
+            it = mMapAudioList.erase(it);
+        }
+        else
+            ++it;
+    }
+
     std::string playbackID = GenerateUniqueID()();
-    PlaybackThread *thread = new PlaybackThread(mCallback, playbackID);;
+    PlaybackThread *thread = new PlaybackThread(mCallback, playbackID);
     bool ret = thread->play(samplename, sink, format, rate, channels);
     if (ret)
     {
@@ -1028,55 +1044,106 @@ bool PulseDtmfGenerator::stream_write_callback(pa_stream *stream, size_t length)
 }
 
 PlaybackThread::PlaybackThread(MixerInterface* mixerCallBack, std::string playbackID)
+    : mDataAvailable(false), mFinished(false), mRemaining(0)
 {
     mCallback = mixerCallBack;
     mPlaybackId = playbackID;
-    mDataAvailable = false;
     fptr = NULL;
     mStream = NULL;
     mPlayData = NULL;
 }
 
+PlaybackThread::~PlaybackThread()
+{
+    // A playback still running is stopped first: a joinable thread must not
+    // be destroyed.
+    if (playbackThread.joinable())
+        stop();
+    releaseStream();
+    closeFile();
+}
+
+void PlaybackThread::setState(const char *state)
+{
+    {
+        const std::lock_guard<std::mutex> lock(mStateLock);
+        playbackState = state;
+    }
+    PM_LOG_DEBUG(" PlaybackThread playbackState = %s", state);
+    playbackStatusChanged(mPlaybackId, state);
+}
+
+void PlaybackThread::releaseStream()
+{
+    const std::lock_guard<std::mutex> lock(mStreamLock);
+    if (mStream)
+    {
+        pa_simple_free(mStream);
+        mStream = NULL;
+    }
+}
+
+void PlaybackThread::closeFile()
+{
+    if (fptr != nullptr)
+    {
+        if (fclose(fptr))
+            PM_LOG_ERROR(MSGID_PULSE_LINK, INIT_KVCOUNT,"PulseAudioLink::playThread: Error closing file");
+        fptr = nullptr;
+    }
+}
+
 bool PlaybackThread::playThread()
 {
     // Read and write data in chunks of 1024 bytes
-    size_t dataSize = 1024;
+    const size_t dataSize = 1024;
     mPlayData = (uint8_t*)malloc(dataSize);
     if (!mPlayData)
     {
-        pa_simple_free(mStream);
-        if(fptr != nullptr)
-        {
-            if(fclose(fptr))
-            {
-                PM_LOG_ERROR(MSGID_PULSE_LINK, INIT_KVCOUNT,"PulseAudioLink::playThread: Error closing file");
-            }
-        }
-        playbackState = "error";
-        PM_LOG_DEBUG(" PlaybackThread::playThread playbackState = %s", playbackState.c_str());
-        playbackStatusChanged(mPlaybackId, playbackState);
+        releaseStream();
+        closeFile();
+        mDataAvailable = false;
+        mFinished = true;
+        setState("error");
         return false;
     }
-    playbackState = "playing";
-    PM_LOG_DEBUG(" PlaybackThread::playThread playbackState = %s", playbackState.c_str());
+    setState("playing");
+    bool played = false;
     while (mDataAvailable) {
-    // Read data from the file
-    size_t n = fread(mPlayData, 1, dataSize, fptr);
-    if (n <= 0) {
-        playbackState = "stopped";
-        playbackStatusChanged(mPlaybackId, playbackState);
-        mDataAvailable = false;
-        break;
+        // Read data from the file, no further than the samples go: a WAV
+        // file can carry other chunks after them.
+        size_t n = fread(mPlayData, 1, std::min(dataSize, mRemaining), fptr);
+        if (n == 0) {
+            played = true;
+            break;
+        }
+        mRemaining -= n;
+        // Write data to the stream
+        if (pa_simple_write(mStream, mPlayData, n, NULL) < 0) {
+            break;
+        }
     }
-    // Write data to the stream
-    if (pa_simple_write(mStream, mPlayData, n, NULL) < 0) {
-        break;
-    }
-    }
+    // The sound has played: let the stream play out and close it now rather
+    // than when someone asks for the playback to stop - nobody does for a
+    // notification, and the open stream kept its sink busy (and the music
+    // lowered under an alert) for as long as audiod ran.
+    if (played)
+        pa_simple_drain(mStream, NULL);
+    releaseStream();
+    closeFile();
+    free(mPlayData);
+    mPlayData = NULL;
     mDataAvailable = false;
-    return true;
+    mFinished = true;
+    if (played)
+        setState("stopped");
+    return played;
 }
 
+bool PlaybackThread::isFinished() const
+{
+    return mFinished;
+}
 
 bool PlaybackThread::play(const char * samplename, const char * sink, const char * format, int rate, int channels)
 {
@@ -1102,14 +1169,43 @@ bool PlaybackThread::play(const char * samplename, const char * sink, const char
         ss.format = PA_SAMPLE_S32LE;
     ss.channels = channels;
     ss.rate = rate;
+    mRemaining = SIZE_MAX;
+
+    // A WAV file says its own format and where its samples are; play those,
+    // not the header.
+    uint8_t header[4096];
+    const size_t headerSize = fread(header, 1, sizeof(header), fptr);
+    WavHeader::Format wav;
+    if (WavHeader::parse(header, headerSize, wav) &&
+        fseek(fptr, static_cast<long>(wav.dataOffset), SEEK_SET) == 0)
+    {
+        ss.format = wav.bitsPerSample == 8 ? PA_SAMPLE_U8 :
+                    wav.bitsPerSample == 16 ? PA_SAMPLE_S16LE :
+                    wav.bitsPerSample == 24 ? PA_SAMPLE_S24LE : PA_SAMPLE_S32LE;
+        ss.channels = static_cast<uint8_t>(wav.channels);
+        ss.rate = wav.rate;
+        mRemaining = wav.dataSize;
+        PM_LOG_INFO(MSGID_PULSE_LINK, INIT_KVCOUNT,
+                "PulseAudioLink::play: %s is a WAV file: %u-bit, %u channels, %u Hz",
+                samplename, wav.bitsPerSample, wav.channels, wav.rate);
+    }
+    else if (fseek(fptr, 0, SEEK_SET) != 0)
+    {
+        PM_LOG_ERROR(MSGID_PULSE_LINK, INIT_KVCOUNT,\
+                "PulseAudioLink::play: could not go back to the start of %s", samplename);
+        closeFile();
+        return false;
+    }
+
     mStream = pa_simple_new(NULL, NULL, PA_STREAM_PLAYBACK, sink,
             "playback", &ss, NULL, NULL, NULL);
     if (!mStream)
     {
         PM_LOG_ERROR(MSGID_PULSE_LINK, INIT_KVCOUNT,\
                 "PulseAudioLink::play: failed to create stream");
+        closeFile();
+        const std::lock_guard<std::mutex> lock(mStateLock);
         playbackState = "error";
-        PM_LOG_DEBUG(" PlaybackThread::play playbackState = %s", playbackState.c_str());
         return false;
     }
     mDataAvailable = true;
@@ -1120,82 +1216,69 @@ bool PlaybackThread::play(const char * samplename, const char * sink, const char
 bool PlaybackThread::pause()
 {
     PM_LOG_DEBUG(" PlaybackThread::pause");
-    if (playbackState != "playing")
+    if (getPlaybackStatus() != "playing")
         return false;
     if (!pa_simple_cork) {
         PM_LOG_ERROR(MSGID_PULSE_LINK, INIT_KVCOUNT,\
                 "PulseAudioLink::pause: libpulse-simple has no pa_simple_cork, cannot pause playback");
         return false;
     }
-    if (pa_simple_cork(mStream, 1, NULL) < 0) {
-        PM_LOG_ERROR(MSGID_PULSE_LINK, INIT_KVCOUNT,\
-                "PulseAudioLink::pause: Failed to pause stream");
-        free((void*)mPlayData);
-        pa_simple_free(mStream);
-        playbackState = "error";
-        PM_LOG_DEBUG(" PlaybackThread::pause playbackState = %s", playbackState.c_str());
-        playbackStatusChanged(mPlaybackId, playbackState);
-        return false;
+    {
+        const std::lock_guard<std::mutex> lock(mStreamLock);
+        if (!mStream || pa_simple_cork(mStream, 1, NULL) < 0) {
+            PM_LOG_ERROR(MSGID_PULSE_LINK, INIT_KVCOUNT,\
+                    "PulseAudioLink::pause: Failed to pause stream");
+            return false;
+        }
     }
-    playbackState = "paused";
-    PM_LOG_DEBUG(" PlaybackThread::pause playbackState = %s", playbackState.c_str());
-    playbackStatusChanged(mPlaybackId, playbackState);
+    setState("paused");
     return true;
 }
 
 bool PlaybackThread::resume()
 {
     PM_LOG_DEBUG(" PlaybackThread::resume");
-    if (playbackState != "paused")
+    if (getPlaybackStatus() != "paused")
         return false;
     if (!pa_simple_cork) {
         PM_LOG_ERROR(MSGID_PULSE_LINK, INIT_KVCOUNT,\
                 "PulseAudioLink::resume: libpulse-simple has no pa_simple_cork, cannot resume playback");
         return false;
     }
-    if (pa_simple_cork(mStream, 0, NULL) < 0) {
-        PM_LOG_ERROR(MSGID_PULSE_LINK, INIT_KVCOUNT,\
-                "PulseAudioLink::resume: Failed to resume stream");
-        free((void*)mPlayData);
-        pa_simple_free(mStream);
-        playbackState = "error";
-        PM_LOG_DEBUG(" PlaybackThread::resume playbackState = %s", playbackState.c_str());
-        playbackStatusChanged(mPlaybackId, playbackState);
-        return false;
+    {
+        const std::lock_guard<std::mutex> lock(mStreamLock);
+        if (!mStream || pa_simple_cork(mStream, 0, NULL) < 0) {
+            PM_LOG_ERROR(MSGID_PULSE_LINK, INIT_KVCOUNT,\
+                    "PulseAudioLink::resume: Failed to resume stream");
+            return false;
+        }
     }
-    playbackState = "playing";
-    PM_LOG_DEBUG(" PlaybackThread::resume playbackState = %s", playbackState.c_str());
-    playbackStatusChanged(mPlaybackId, playbackState);
+    setState("playing");
     return true;
 }
 
 bool PlaybackThread::stop()
 {
     PM_LOG_DEBUG(" PlaybackThread::stop");
-    if (pa_simple_flush(mStream, NULL) < 0) {
-        free((void*)mPlayData);
-        pa_simple_free(mStream);
-        playbackState = "error";
-        PM_LOG_DEBUG(" PlaybackThread::stop playbackState = %s", playbackState.c_str());
-        playbackStatusChanged(mPlaybackId, playbackState);
-        return false;
-    }
     mDataAvailable = false;
-    playbackThread.join();
-    free(mPlayData);
-
-    pa_simple_free(mStream);
-    if(playbackState != "stopped")
     {
-        playbackState = "stopped";
-        PM_LOG_DEBUG(" PlaybackThread::stop playbackState = %s", playbackState.c_str());
-        playbackStatusChanged(mPlaybackId, playbackState);
+        // Drop what is queued so a write waiting for room returns.
+        const std::lock_guard<std::mutex> lock(mStreamLock);
+        if (mStream)
+            pa_simple_flush(mStream, NULL);
     }
+    if (playbackThread.joinable())
+        playbackThread.join();
+    releaseStream();
+    closeFile();
+    if (getPlaybackStatus() != "stopped")
+        setState("stopped");
     return true;
 }
 
 std::string PlaybackThread::getPlaybackStatus()
 {
+    const std::lock_guard<std::mutex> lock(mStateLock);
     return playbackState;
 }
 

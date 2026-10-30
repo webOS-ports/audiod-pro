@@ -21,6 +21,7 @@
 #include <pulse/simple.h>
 #include <set>
 #include <map>
+#include <atomic>
 #include <mutex>
 #include <string>
 #include "log.h"
@@ -135,19 +136,31 @@ class PlaybackThread
 {
     public:
         PlaybackThread(MixerInterface* mixerCallBack, std::string playbackId);
+        ~PlaybackThread();
+        PlaybackThread(const PlaybackThread &) = delete;
+        PlaybackThread &operator=(const PlaybackThread &) = delete;
         bool play(const char * samplename, const char * sink, const char * format, int rate, int channels);
         bool pause();
         bool resume();
         bool stop();
+        //! The sound has played to its end, or failed, and let go of its stream.
+        bool isFinished() const;
         std::string getPlaybackStatus();
         void playbackStatusChanged(std::string playbackID, std::string state);
     private:
-        bool mDataAvailable;
+        std::atomic<bool> mDataAvailable;
+        std::atomic<bool> mFinished;
+        size_t mRemaining;          //!< bytes of samples still to play
         pa_simple *mStream;
+        std::mutex mStreamLock;     //!< mStream against its release by the thread
         bool playThread();
+        void setState(const char *state);
+        void releaseStream();
+        void closeFile();
         uint8_t* mPlayData;
         FILE *fptr;
         std::thread playbackThread;
+        std::mutex mStateLock;      //!< playbackState, read from the bus thread
         std::string playbackState;
         MixerInterface *mCallback;
         std::string mPlaybackId;
