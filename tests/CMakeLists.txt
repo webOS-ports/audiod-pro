@@ -19,8 +19,9 @@
 # manager routes and pauses media by (callState), and whether something is
 # ringing (ringState), when to reconnect to PulseAudio (paReconnect),
 # which output a volume request moves (volumeTarget), when an alert lowers
-# the music (duckPolicy), and what a WAV file's header says about the sound
-# playSound plays (wavHeader).
+# the music (duckPolicy), what a WAV file's header says about the sound
+# playSound plays (wavHeader), and stopping on SIGTERM within a deadline
+# (shutdownGuard).
 
 find_package(GTest REQUIRED)
 
@@ -32,13 +33,15 @@ add_executable(audiod-tests
     ${CMAKE_SOURCE_DIR}/src/modules/masterVolumeManager/volumeTarget.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/audioPolicyManager/duckPolicy.cpp
     ${CMAKE_SOURCE_DIR}/src/wavHeader.cpp
+    ${CMAKE_SOURCE_DIR}/src/shutdownGuard.cpp
     test_btstate.cpp
     test_callstate.cpp
     test_ringstate.cpp
     test_pareconnect.cpp
     test_volumetarget.cpp
     test_duckpolicy.cpp
-    test_wavheader.cpp)
+    test_wavheader.cpp
+    test_shutdownguard.cpp)
 target_include_directories(audiod-tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src/modules/bluetoothManager
     ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager
