@@ -53,10 +53,22 @@ namespace OutputChoice
         bool connected = false;
         //! When it was connected, from ConnectOrder::next(); 0 if never.
         std::uint64_t connectedAt = 0;
+        //! The sink it plays through when that is not one of its own name:
+        //! on LuneOS the headphone jack is a port of pcm_output. "" if none.
+        std::string sink;
     };
 
     //! The output to use, or "" when none is connected.
     std::string choose(const std::vector<Output> &outputs);
+
+    /* The output to route the audio to now that announced has been
+     * reported connected: the one choose() picks, when that is the
+     * announced output or plays through it, else "" (the routing stays as
+     * it is). pcm_output announced again after a PulseAudio restart, with
+     * the jack told again before it, still has to be routed to: the
+     * headphones play through it, and PulseAudio could not route to it
+     * while it was not there yet. */
+    std::string routeOnAnnounce(const std::vector<Output> &outputs, const std::string &announced);
 
     /* Hands out increasing connect stamps. 64 bits, so it does not wrap
      * on any target, armv7 included. */
