@@ -33,6 +33,8 @@
 #include "ringState.h"
 #include "paReconnect.h"
 #include "videoSpeaker.h"
+#include "btCall.h"
+#include "hfpAgent.h"
 
 /*
  * palmLegacyManager -- serves the Palm-era com.palm.audio API on top of audiod.
@@ -72,7 +74,7 @@
  * the two legacy names need their own handles, registered here.
  */
 
-class PalmLegacyManager : public ModuleInterface
+class PalmLegacyManager : public ModuleInterface, private HfpAgent::Listener
 {
     public:
         /* Where audio should come out for a routable category. Named after the
@@ -178,6 +180,12 @@ class PalmLegacyManager : public ModuleInterface
          * audio, "" otherwise; followed through the active output as well. */
         std::string mUsbAudioSink;
 
+        /* Call audio on a hands-free headset: oFono is the gateway, mHfpAgent
+         * its audio agent holding the SCO link, mBtCall what is connected and
+         * whether the call belongs on the headset. */
+        BtCall mBtCall;
+        HfpAgent *mHfpAgent;
+
         /* Media this module paused for a call, to be resumed when it ends.
          * mMediaGeneration invalidates the replies of a pause still in flight
          * when the call it was for has already ended. */
@@ -260,6 +268,22 @@ class PalmLegacyManager : public ModuleInterface
          * plugged-in jack taking over from the earpiece, and outside a call
          * the jack or else the loudspeaker. */
         EPhoneRoute effectiveRoute() const;
+
+        /* Hands-free headset: what the call situation is in BtCall's terms,
+         * and opening or closing the SCO link to match it. */
+        BtCall::Situation btSituation() const;
+        void syncBtCall();
+        /* HfpAgent::Listener. Not marked override: the ModuleInterface
+         * overrides in this class are not either (-Winconsistent-missing-override). */
+        void hfpCardAdded(const std::string &card, const std::string &remote);
+        void hfpCardRemoved(const std::string &card);
+        void hfpScoConnected(const std::string &card, unsigned codec);
+        void hfpScoConnectFailed(const std::string &card, const std::string &error);
+        void hfpScoClosed(const std::string &card);
+        void hfpServiceGone();
+        /* The headset is gone or gave the audio back: a call the user had put
+         * on it goes back to the default route. */
+        static void dropBluetoothChoice();
 
         /* Pause whatever is playing through com.webos.service.mediacontroller,
          * and, for a call, play it again once the call is over. */
