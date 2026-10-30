@@ -508,7 +508,11 @@ void PalmLegacyManager::initialize()
     /* The active output device is what master/setVolume has to be addressed
      * at, and audioRouter is the thing that knows it. */
     if (mObjModuleManager)
+    {
         mObjModuleManager->subscribeModuleEvent(this, utils::eEventActiveDeviceInfo);
+        /* PulseAudio coming back: see tellRouterJack(). */
+        mObjModuleManager->subscribeModuleEvent(this, utils::eEventMixerStatus);
+    }
 
     if (!mPalmHandle && !mPortsHandle)
         PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
@@ -576,6 +580,18 @@ void PalmLegacyManager::handleEvent(events::EVENTS_T* ev)
                 mActiveSoundOutput = info->deviceName;
                 setActiveOutput(info->deviceName);
             }
+        }
+        break;
+        case utils::eEventMixerStatus:
+        {
+            const events::EVENT_MIXER_STATUS_T *status =
+                (const events::EVENT_MIXER_STATUS_T*) ev;
+            /* audioRouter marked every output disconnected when PulseAudio
+             * went away, the headphones too. PulseAudio announces its sinks
+             * again, but the jack is no sink of its own, and its state only
+             * reaches the router from here, on a change: tell it again. */
+            if (status->mixerStatus && status->mixerType == utils::ePulseMixer && jackPlugged())
+                tellRouterJack();
         }
         break;
         default:
@@ -1352,13 +1368,7 @@ void PalmLegacyManager::setJackState(EJackState state)
      * than through a module event: the master volume manager would take
      * pcm_headphone for a device with a volume of its own. */
     if (wasPlugged != jackPlugged())
-    {
-        AudioRouter *router = AudioRouter::getAudioRouterInstance();
-        if (router)
-            router->eventDeviceConnectionStatus("pcm_headphone", "pcm_headphone", "",
-                jackPlugged() ? utils::eDeviceConnected : utils::eDeviceDisconnected,
-                utils::ePulseMixer, true);
-    }
+        tellRouterJack();
 
     /* Pulling the plug is the moment music would otherwise carry on out of
      * the loudspeaker. Only a real unplug counts -- going from unknown to
@@ -1378,6 +1388,15 @@ void PalmLegacyManager::setJackState(EJackState state)
 
     /* Re-route: effectiveRoute() has changed under the current call mode. */
     updateCallMode();
+}
+
+void PalmLegacyManager::tellRouterJack()
+{
+    AudioRouter *router = AudioRouter::getAudioRouterInstance();
+    if (router)
+        router->eventDeviceConnectionStatus("pcm_headphone", "pcm_headphone", "",
+            jackPlugged() ? utils::eDeviceConnected : utils::eDeviceDisconnected,
+            utils::ePulseMixer, true);
 }
 
 static bool isBluetoothSink(const std::string &name)

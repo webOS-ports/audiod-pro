@@ -41,6 +41,22 @@ std::string OutputChoice::choose(const std::vector<Output> &outputs)
     return best ? best->name : std::string();
 }
 
+std::string OutputChoice::routeOnAnnounce(const std::vector<Output> &outputs,
+                                          const std::string &announced)
+{
+    const std::string chosen = choose(outputs);
+    if (chosen.empty() || announced.empty())
+        return std::string();
+    if (chosen == announced)
+        return chosen;
+    for (const Output &output : outputs)
+    {
+        if (output.name == chosen)
+            return output.sink == announced ? chosen : std::string();
+    }
+    return std::string();
+}
+
 std::uint64_t OutputChoice::ConnectOrder::stamp(std::uint64_t current)
 {
     if (current != 0)

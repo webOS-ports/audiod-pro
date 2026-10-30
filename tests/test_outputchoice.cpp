@@ -30,7 +30,7 @@ public:
     Phone()
     {
         add("pcm_output", 4, false);
-        add("pcm_headphone", 3, true);
+        add("pcm_headphone", 3, true, "pcm_output");
         add("bluetooth_speaker0", 1, true);
         add("usb_speaker0", 2, true);
     }
@@ -59,13 +59,22 @@ public:
 
     std::string chosen() const { return OutputChoice::choose(mOutputs); }
 
+    // An output reported connected, as AudioRouter::setOutputDeviceRouting
+    // has it: what the audio is routed to now, "" for no change.
+    std::string announce(const std::string &name)
+    {
+        connect(name);
+        return OutputChoice::routeOnAnnounce(mOutputs, name);
+    }
+
 private:
-    void add(const std::string &name, int priority, bool removable)
+    void add(const std::string &name, int priority, bool removable, const std::string &sink = "")
     {
         OutputChoice::Output o;
         o.name = name;
         o.priority = priority;
         o.removable = removable;
+        o.sink = sink;
         mOutputs.push_back(o);
     }
 
@@ -335,4 +344,54 @@ TEST(OutputChoice, AHeadsetArrivingInAVideoCallTakesItOffTheLoudspeaker)
     call.phone.connect("bluetooth_speaker0");
     EXPECT_EQ(call.route(), VideoSpeaker::eMove_None);
     EXPECT_FALSE(call.speaker);
+}
+
+TEST(OutputChoice, AnnouncingTheOutputThatWinsRoutesToIt)
+{
+    Phone phone;
+    EXPECT_EQ(phone.announce("pcm_output"), "pcm_output");
+    EXPECT_EQ(phone.announce("bluetooth_speaker0"), "bluetooth_speaker0");
+    // Reported again while it has the audio: routed to again.
+    EXPECT_EQ(phone.announce("bluetooth_speaker0"), "bluetooth_speaker0");
+    // pcm_output reported again while Bluetooth has the audio: no change.
+    EXPECT_EQ(phone.announce("pcm_output"), "");
+}
+
+TEST(OutputChoice, PcmOutputBackAfterARestartCarriesTheHeadphones)
+{
+    // Headphones in, PulseAudio restarts. The legacy manager tells the
+    // router about the jack again as soon as PulseAudio is back, before
+    // pcm_output is there to route to; when pcm_output is announced, the
+    // headphones play through it and it has to be routed to then.
+    Phone phone;
+    phone.announce("pcm_output");
+    EXPECT_EQ(phone.announce("pcm_headphone"), "pcm_headphone");
+    phone.losePulseAudio();
+    EXPECT_EQ(phone.announce("pcm_headphone"), "pcm_headphone");
+    EXPECT_EQ(phone.announce("pcm_output"), "pcm_headphone");
+    EXPECT_EQ(phone.chosen(), "pcm_headphone");
+
+    // Without the jack told again, pcm_output alone would have the audio
+    // and a Bluetooth headset coming back would take it from the
+    // headphones it was connected before.
+    Phone untold;
+    untold.announce("pcm_output");
+    untold.announce("bluetooth_speaker0");
+    untold.announce("pcm_headphone");
+    untold.losePulseAudio();
+    untold.announce("pcm_output");
+    EXPECT_EQ(untold.announce("bluetooth_speaker0"), "bluetooth_speaker0");
+}
+
+TEST(OutputChoice, ASinkTheChosenOneDoesNotPlayThroughChangesNothing)
+{
+    Phone phone;
+    phone.announce("pcm_output");
+    phone.announce("bluetooth_speaker0");
+    phone.announce("pcm_headphone");
+    // The headphones have it; Bluetooth's sink reported again is no reason
+    // to route anywhere.
+    EXPECT_EQ(phone.announce("bluetooth_speaker0"), "");
+    EXPECT_EQ(phone.announce("usb_speaker0"), "usb_speaker0");
+    EXPECT_EQ(phone.announce("pcm_output"), "");
 }

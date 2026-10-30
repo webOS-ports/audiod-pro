@@ -257,6 +257,8 @@ class PalmLegacyManager : public ModuleInterface, private HfpAgent::Listener
         static void paRingInputCb(pa_context *c, const pa_sink_input_info *info, int eol, void *userdata);
         static void paBtSinkCb(pa_context *c, const pa_sink_info *info, int eol, void *userdata);
         void setJackState(EJackState state);
+        /* Tells audioRouter whether headphones are in (pcm_headphone). */
+        void tellRouterJack();
         void setActiveOutput(const std::string &sinkName);
         void followUsbOutput(const std::string &sinkName);
         bool jackPlugged() const

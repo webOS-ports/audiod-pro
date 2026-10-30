@@ -124,6 +124,7 @@ class AudioRouter : public ModuleInterface
         void notifyGetSoundoutput(const std::string& soundoutput, const std::string& display);
         void notifyGetSoundInput(const std::string& soundInput, const std::string& display);
         std::string getPriorityDevice(const std::string& display, const bool& isOutput);
+        std::vector<OutputChoice::Output> outputsOf(const std::string& display) const;
         std::string getActiveDevice(const std::string& display, const bool& isOutput);
         std::string getActualOutputDevice(const std::string &deviceName);
         utils::SINK_ROUTING_INFO_T getSinkRoutingInfo(const std::string &display);
