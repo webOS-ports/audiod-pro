@@ -96,5 +96,16 @@ CallState::Transition CallState::transition(ECallMode from, ECallMode to)
     t.pauseMedia = (from == eCallMode_None && to != eCallMode_None);
     t.resumeMedia = (from != eCallMode_None && to == eCallMode_None);
     t.resetSpeaker = t.resumeMedia;
+    t.resetMute = t.resumeMedia;
     return t;
+}
+
+CallState::Unplug CallState::unplugged(ECallMode mode, bool bluetoothAudio)
+{
+    Unplug u{};
+    if (bluetoothAudio)
+        return u;
+    u.pauseMedia = (mode == eCallMode_None);
+    u.keepPausedAfterCall = !u.pauseMedia;
+    return u;
 }

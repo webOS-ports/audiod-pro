@@ -244,6 +244,7 @@ TEST(CallState, MediaPausesForTheFirstCallAndResumesAfterTheLast)
     EXPECT_TRUE(t.pauseMedia);
     EXPECT_FALSE(t.resumeMedia);
     EXPECT_FALSE(t.resetSpeaker);
+    EXPECT_FALSE(t.resetMute);
 
     t = CallState::transition(eCallMode_None, eCallMode_Voip);
     EXPECT_TRUE(t.pauseMedia);
@@ -253,10 +254,12 @@ TEST(CallState, MediaPausesForTheFirstCallAndResumesAfterTheLast)
     EXPECT_FALSE(t.pauseMedia);
     EXPECT_TRUE(t.resumeMedia);
     EXPECT_TRUE(t.resetSpeaker);
+    EXPECT_TRUE(t.resetMute);
 
     t = CallState::transition(eCallMode_Voip, eCallMode_None);
     EXPECT_TRUE(t.resumeMedia);
     EXPECT_TRUE(t.resetSpeaker);
+    EXPECT_TRUE(t.resetMute);
 }
 
 TEST(CallState, MovingBetweenCallsIsNotATransition)
@@ -269,12 +272,42 @@ TEST(CallState, MovingBetweenCallsIsNotATransition)
             EXPECT_FALSE(t.pauseMedia);
             EXPECT_FALSE(t.resumeMedia);
             EXPECT_FALSE(t.resetSpeaker);
+            EXPECT_FALSE(t.resetMute);
         }
     }
     auto t = CallState::transition(eCallMode_None, eCallMode_None);
     EXPECT_FALSE(t.pauseMedia);
     EXPECT_FALSE(t.resumeMedia);
     EXPECT_FALSE(t.resetSpeaker);
+    EXPECT_FALSE(t.resetMute);
 }
 
 } // namespace
+
+TEST(CallState, UnpluggingPausesTheMusic)
+{
+    const CallState::Unplug u = CallState::unplugged(eCallMode_None, false);
+    EXPECT_TRUE(u.pauseMedia);
+    EXPECT_FALSE(u.keepPausedAfterCall);
+}
+
+TEST(CallState, UnpluggingInACallKeepsTheMusicPausedAfterIt)
+{
+    for (auto mode : {eCallMode_Carrier, eCallMode_Voip})
+    {
+        const CallState::Unplug u = CallState::unplugged(mode, false);
+        EXPECT_FALSE(u.pauseMedia);
+        EXPECT_TRUE(u.keepPausedAfterCall);
+    }
+}
+
+TEST(CallState, UnpluggingLeavesBluetoothAudioAlone)
+{
+    // The music is in the Bluetooth headset, not in the plug that was pulled.
+    for (auto mode : {eCallMode_None, eCallMode_Carrier, eCallMode_Voip})
+    {
+        const CallState::Unplug u = CallState::unplugged(mode, true);
+        EXPECT_FALSE(u.pauseMedia);
+        EXPECT_FALSE(u.keepPausedAfterCall);
+    }
+}

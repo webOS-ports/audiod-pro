@@ -28,6 +28,7 @@
 #include "moduleManager.h"
 #include "volumePolicyInfoParser.h"
 #include "audioMixer.h"
+#include "duckPolicy.h"
 
 #define VOLUME_POLICY_CONFIG "audiod_sink_volume_policy_config.json"
 #define SOURCE_VOLUME_POLICY_CONFIG "audiod_source_volume_policy_config.json"
@@ -47,6 +48,16 @@ class AudioPolicyManager : public ModuleInterface
         utils::mapSourceToStream mSourceToStream;
         utils::mapStreamToSource mStreamToSource;
         utils::mapTrackVolumeInfo mTrackVolumeInfo;
+        /* Ducking: the music is played at mDuckPercent of its volume, ramped
+         * towards mDuckTarget by mDuckTimer (see duckPolicy.h). */
+        bool mRingerOn;
+        int mDuckPercent;
+        int mDuckTarget;
+        guint mDuckTimer;
+        void updateDucking();
+        void applyDuckPercent();
+        static gboolean duckRampStep(gpointer data);
+        int duckedVolume(EVirtualAudioSink audioSink, int volume);
         static bool mIsObjRegistered;
         AudioPolicyManager(ModuleConfig* const pConfObj);
         //Register Object to object factory. This is called automatically
@@ -180,6 +191,8 @@ class AudioPolicyManager : public ModuleInterface
         bool setStreamVolume(const std::string& streamType, const int& volume);
         int getStreamVolume(const std::string& streamType);
         bool setStreamMute(const std::string& streamType, const bool& mute);
+        //! The ringer switch, which lets alerts lower the music (duckPolicy.h).
+        void setRingerOn(bool ringerOn);
         bool getStreamMute(const std::string& streamType);
 
         //Luna API callbacks for pulseaudio calls

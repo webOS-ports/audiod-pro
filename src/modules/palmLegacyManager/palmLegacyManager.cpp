@@ -74,6 +74,7 @@ PalmLegacyManager::PalmLegacyManager(ModuleConfig* const pConfObj) :
     mCallMode(eCallMode_None),
     mAppliedCallMode(eCallMode_None),
     mAppliedRoute(ePhoneRoute_Earpiece),
+    mAppliedRing(false),
     mPhoneMuted(false),
     mMicMuted(false),
     mHac(false),
@@ -729,14 +730,18 @@ void PalmLegacyManager::paContextStateCb(pa_context *c, void *userdata)
             {
                 self->mAppliedCallMode = self->mCallMode;
                 self->mAppliedRoute = self->effectiveRoute();
+                self->mAppliedRing = self->mRingState.ringing();
             }
 
             /* Follow the jack from here on. Port availability changes arrive
              * as sink and source change events; the initial walk picks up
-             * whatever is plugged in already, including at boot. */
+             * whatever is plugged in already, including at boot. Sink-input
+             * events say when a ringtone or alarm starts and stops. */
             pa_context_set_subscribe_callback(c, &PalmLegacyManager::paSubscribeCb, self);
             {
-                pa_operation *op = pa_context_subscribe(c, PA_SUBSCRIPTION_MASK_SINK,
+                pa_operation *op = pa_context_subscribe(c, (pa_subscription_mask_t)
+                                                        (PA_SUBSCRIPTION_MASK_SINK |
+                                                         PA_SUBSCRIPTION_MASK_SINK_INPUT),
                                                         nullptr, nullptr);
                 if (op)
                     pa_operation_unref(op);
@@ -748,6 +753,10 @@ void PalmLegacyManager::paContextStateCb(pa_context *c, void *userdata)
                 op = pa_context_get_sink_info_list(c, &PalmLegacyManager::paJackSinkCb, self);
                 if (op)
                     pa_operation_unref(op);
+
+                op = pa_context_get_sink_input_info_list(c, &PalmLegacyManager::paRingInputCb, self);
+                if (op)
+                    pa_operation_unref(op);
             }
             break;
         case PA_CONTEXT_FAILED:
@@ -757,6 +766,7 @@ void PalmLegacyManager::paContextStateCb(pa_context *c, void *userdata)
              * rather than being swallowed by updateCallMode()'s early return. */
             self->mPaReady = false;
             self->mAppliedCallMode = eCallMode_None;
+            self->mRingState.clear();
             PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
                 "Lost the PulseAudio connection; call routing is suspended");
             break;
@@ -792,12 +802,13 @@ bool PalmLegacyManager::applyCallRouting(ECallMode mode, EPhoneRoute route)
         return false;
     }
 
-    RoutingRequest *req = new(std::nothrow) RoutingRequest{this, mode, route, 1};
+    RoutingRequest *req = new(std::nothrow) RoutingRequest{this, mode, route,
+                                                           mRingState.ringing(), 1};
     if (!req)
         return false;
 
     PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
-        "applyCallRouting: mode=%d route=%d", (int) mode, (int) route);
+        "applyCallRouting: mode=%d route=%d ring=%d", (int) mode, (int) route, (int) req->ring);
 
     /* Cards first: on a carrier call the codec has to be on its voicecall
      * profile before the sink and source ports below even exist. */
@@ -920,6 +931,7 @@ void PalmLegacyManager::paSinkInfoCb(pa_context *c, const pa_sink_info *info, in
 
     pa_sink_port_info *earpiece = nullptr, *speaker = nullptr;
     pa_sink_port_info *wiredHeadset = nullptr, *wiredHeadphone = nullptr;
+    pa_sink_port_info *ringHeadset = nullptr, *ringHeadphone = nullptr;
     pa_sink_port_info *highest = nullptr, *preferred = nullptr;
 
     for (uint32_t i = 0; i < info->n_ports; i++)
@@ -939,6 +951,11 @@ void PalmLegacyManager::paSinkInfoCb(pa_context *c, const pa_sink_info *info, in
             wiredHeadset = p;
         else if (!strcmp(p->name, "output-wired_headphone") && p->available != PA_PORT_AVAILABLE_NO)
             wiredHeadphone = p;
+        /* The droid card's speaker-and-wired ports, for ringing. */
+        else if (!strcmp(p->name, "output-speaker+wired_headset") && p->available != PA_PORT_AVAILABLE_NO)
+            ringHeadset = p;
+        else if (!strcmp(p->name, "output-speaker+wired_headphone") && p->available != PA_PORT_AVAILABLE_NO)
+            ringHeadphone = p;
     }
 
     /* An earpiece or a loudspeaker is what identifies the device's own sink;
@@ -962,6 +979,11 @@ void PalmLegacyManager::paSinkInfoCb(pa_context *c, const pa_sink_info *info, in
             pa_sink_port_info *wired = (req->route == ePhoneRoute_HeadsetMic)
                                      ? (wiredHeadset ? wiredHeadset : wiredHeadphone)
                                      : (wiredHeadphone ? wiredHeadphone : wiredHeadset);
+            /* Ringing with something in the jack: the loudspeaker too, where
+             * the card can do both at once. */
+            pa_sink_port_info *ring = (wired == wiredHeadset) ? ringHeadset : ringHeadphone;
+            if (wired && ring && RingState::speakerToo(req->mode, req->ring))
+                wired = ring;
             preferred = wired ? wired : (req->mode != eCallMode_None ? earpiece : nullptr);
             break;
         }
@@ -1080,10 +1102,33 @@ void PalmLegacyManager::paSourcePortSetCb(pa_context *c, int success, void *user
 void PalmLegacyManager::paSubscribeCb(pa_context *c, pa_subscription_event_type_t t,
                                       uint32_t idx, void *userdata)
 {
+    const unsigned int type = t & PA_SUBSCRIPTION_EVENT_TYPE_MASK;
+
+    if ((t & PA_SUBSCRIPTION_EVENT_FACILITY_MASK) == PA_SUBSCRIPTION_EVENT_SINK_INPUT)
+    {
+        PalmLegacyManager *self = static_cast<PalmLegacyManager*>(userdata);
+        if (!self)
+            return;
+
+        if (type == PA_SUBSCRIPTION_EVENT_REMOVE)
+        {
+            if (self->mRingState.streamGone(idx))
+                self->updateCallMode();
+            return;
+        }
+
+        /* New, or changed (corked, uncorked): what kind of stream it is
+         * comes with its info. */
+        pa_operation *op = pa_context_get_sink_input_info(c, idx, &PalmLegacyManager::paRingInputCb,
+                                                          userdata);
+        if (op)
+            pa_operation_unref(op);
+        return;
+    }
+
     if ((t & PA_SUBSCRIPTION_EVENT_FACILITY_MASK) != PA_SUBSCRIPTION_EVENT_SINK)
         return;
 
-    const unsigned int type = t & PA_SUBSCRIPTION_EVENT_TYPE_MASK;
     if (type != PA_SUBSCRIPTION_EVENT_CHANGE && type != PA_SUBSCRIPTION_EVENT_NEW)
         return;
 
@@ -1158,6 +1203,24 @@ void PalmLegacyManager::paJackSinkCb(pa_context *c, const pa_sink_info *info, in
     self->setJackState(state);
 }
 
+void PalmLegacyManager::paRingInputCb(pa_context *, const pa_sink_input_info *info, int eol,
+                                      void *userdata)
+{
+    PalmLegacyManager *self = static_cast<PalmLegacyManager*>(userdata);
+    if (!self || eol || !info)
+        return;
+
+    /* module-palm-policy tags every stream with the virtual sink it was
+     * opened on, and keeps the tag when it moves the stream on. */
+    const char *mediaType = pa_proplist_gets(info->proplist, "media.type");
+    if (self->mRingState.streamSeen(info->index, mediaType, info->corked))
+    {
+        PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+            "Ringing %s", self->mRingState.ringing() ? "started" : "stopped");
+        self->updateCallMode();
+    }
+}
+
 void PalmLegacyManager::setJackState(EJackState state)
 {
     if (state == mJackState)
@@ -1172,12 +1235,15 @@ void PalmLegacyManager::setJackState(EJackState state)
     /* Pulling the plug is the moment music would otherwise carry on out of
      * the loudspeaker. Only a real unplug counts -- going from unknown to
      * unplugged at start-up is not one. During a call there is nothing
-     * playing to pause, but resuming afterwards would now be out loud. */
+     * playing to pause, but resuming afterwards would now be out loud. With
+     * Bluetooth carrying the audio the plug was not playing anything, and
+     * the music goes on in the headset. */
     if (wasPlugged && !jackPlugged())
     {
-        if (mCallMode == eCallMode_None)
+        const CallState::Unplug unplug = CallState::unplugged(mCallMode, !mBtAudioSink.empty());
+        if (unplug.pauseMedia)
             pauseMedia(false);
-        else
+        if (unplug.keepPausedAfterCall)
             mResumeMediaAfterCall = false;
     }
 
@@ -1448,7 +1514,8 @@ void PalmLegacyManager::updateCallMode()
      * Subscribers are told either way: the routing may be unchanged while
      * what they see (the jack, a call starting with the speaker already on)
      * is not. */
-    if (mCallMode == mAppliedCallMode && route == mAppliedRoute)
+    if (mCallMode == mAppliedCallMode && route == mAppliedRoute &&
+        mRingState.ringing() == mAppliedRing)
     {
         PM_LOG_DEBUG("updateCallMode: mode %d / route %d unchanged, nothing to apply",
             (int) mCallMode, (int) route);
@@ -1460,6 +1527,7 @@ void PalmLegacyManager::updateCallMode()
     {
         mAppliedCallMode = mCallMode;
         mAppliedRoute = route;
+        mAppliedRing = mRingState.ringing();
     }
     else
     {
@@ -1485,6 +1553,16 @@ void PalmLegacyManager::applyCallStatus()
         LegacyCategory *phone = categoryByName("/phone");
         if (phone && phone->route == ePhoneRoute_Speaker)
             phone->route = ePhoneRoute_Earpiece;
+    }
+
+    /* Mute belongs to the call too. A call hung up while muted left the
+     * handset mic muted, so every recording and VoIP call after it was
+     * silent. Cleared before the routing below, whose source walk then
+     * unmutes the capture path. */
+    if (change.resetMute)
+    {
+        mMicMuted = false;
+        mPhoneMuted = false;
     }
 
     /* Deliberately called on the disconnect path too -- see updateCallMode(). */
@@ -2435,6 +2513,9 @@ bool PalmLegacyManager::_setRingerSwitch(LSHandle *sh, LSMessage *message, void 
          * assumes has happened. */
         if (policy && ringtone && ringtone->streamType)
             policy->setStreamMute(ringtone->streamType, !ringerOn);
+        /* And, as on 2.x, alerts only lower the music with the switch on. */
+        if (policy)
+            policy->setRingerOn(ringerOn);
         self->notifyStatusSubscribers();
     }
 

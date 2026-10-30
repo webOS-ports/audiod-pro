@@ -96,8 +96,18 @@ public:
         bool pauseMedia;    //!< the first call started
         bool resumeMedia;   //!< the last call ended
         bool resetSpeaker;  //!< the last call ended: the next starts on the earpiece
+        bool resetMute;     //!< the last call ended: the mic is live again
     };
     static Transition transition(ECallMode from, ECallMode to);
+
+    //! What has to happen when the headphones are unplugged.
+    struct Unplug
+    {
+        bool pauseMedia;          //!< no call: the music would go on out loud
+        bool keepPausedAfterCall; //!< in a call: resuming afterwards would be out loud
+    };
+    //! Nothing, when Bluetooth carries the audio: the plug was not playing it.
+    static Unplug unplugged(ECallMode mode, bool bluetoothAudio);
 
 private:
     struct Calls

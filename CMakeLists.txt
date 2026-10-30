@@ -126,10 +126,13 @@ endif(AUDIOD_TEST_API)
 SET (modules_files
         src/modules/palmLegacyManager/palmLegacyManager.cpp
         src/modules/palmLegacyManager/callState.cpp
+        src/modules/palmLegacyManager/ringState.cpp
         src/modules/lunaEventSubscriber/lunaEventSubscriber.cpp
         src/modules/masterVolumeManager/OSEMasterVolumeManager.cpp
+        src/modules/masterVolumeManager/volumeTarget.cpp
         src/modules/deviceManager/udevDeviceManager.cpp
         src/modules/audioPolicyManager/audioPolicyManager.cpp
+        src/modules/audioPolicyManager/duckPolicy.cpp
         src/modules/audioPolicyManager/volumePolicyInfoParser.cpp
         src/modules/bluetoothManager/bluetoothManager.cpp
         src/modules/bluetoothManager/btState.cpp

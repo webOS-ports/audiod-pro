@@ -16,18 +16,32 @@
 
 # Unit tests for the parts of audiod that stand on their own: the
 # Bluetooth manager's bookkeeping (btState) and the call state the legacy
-# manager routes and pauses media by (callState).
+# manager routes and pauses media by (callState), and whether something is
+# ringing (ringState), which output a volume request moves
+# (volumeTarget), when an alert lowers the music (duckPolicy), and what a
+# WAV file's header says about the sound playSound plays (wavHeader).
 
 find_package(GTest REQUIRED)
 
 add_executable(audiod-tests
     ${CMAKE_SOURCE_DIR}/src/modules/bluetoothManager/btState.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/callState.cpp
+    ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/ringState.cpp
+    ${CMAKE_SOURCE_DIR}/src/modules/masterVolumeManager/volumeTarget.cpp
+    ${CMAKE_SOURCE_DIR}/src/modules/audioPolicyManager/duckPolicy.cpp
+    ${CMAKE_SOURCE_DIR}/src/wavHeader.cpp
     test_btstate.cpp
-    test_callstate.cpp)
+    test_callstate.cpp
+    test_ringstate.cpp
+    test_volumetarget.cpp
+    test_duckpolicy.cpp
+    test_wavheader.cpp)
 target_include_directories(audiod-tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src/modules/bluetoothManager
-    ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager)
+    ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager
+    ${CMAKE_SOURCE_DIR}/src/modules/masterVolumeManager
+    ${CMAKE_SOURCE_DIR}/src/modules/audioPolicyManager
+    ${CMAKE_SOURCE_DIR}/include)
 target_compile_options(audiod-tests PRIVATE -Wall -Wextra)
 target_link_libraries(audiod-tests GTest::gtest GTest::gtest_main pthread)
 add_test(NAME audiod-tests COMMAND audiod-tests)

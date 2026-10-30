@@ -163,6 +163,8 @@ class OSEMasterVolumeManager : public MasterVolumeInterface
         bool isValidSoundDevice(std::string deviceName, bool isOutput);
         std::string getMappedName (std::string deviceName);
         std::string getActualDeviceName (std::string mappedName);
+        //! The output a setVolume naming soundOutput moves; see volumeTarget.h.
+        std::string volumeTargetOf(const std::string &soundOutput);
 
         void setVolume(LSHandle *lshandle, LSMessage *message, void *ctx);
         void setMicVolume(LSHandle *lshandle, LSMessage *message, void *ctx);
