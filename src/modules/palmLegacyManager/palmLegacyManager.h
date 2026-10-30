@@ -33,6 +33,7 @@
 #include "callState.h"
 #include "ringState.h"
 #include "usbRing.h"
+#include "storedSetting.h"
 #include "paReconnect.h"
 #include "videoSpeaker.h"
 #include "btCall.h"
@@ -201,6 +202,16 @@ class PalmLegacyManager : public ModuleInterface, private HfpAgent::Listener
          * whether the call belongs on the headset. */
         BtCall mBtCall;
         HfpAgent *mHfpAgent;
+        /* Whether a headset connecting during a call takes it: Bluetooth
+         * Settings' "Headset takes calls", kept in settingsservice as
+         * sound/bluetoothHeadsetTakesCall, the way the master volume keeps
+         * sound/soundOutputList (OSEMasterVolumeManager). */
+        StoredSetting<bool> mHeadsetTakesCall;
+        void readStoredSettings();
+        void storeSettings();
+        void applySettings();
+        pbnjson::JValue settingsReply() const;
+        static bool _storedSettingsCb(LSHandle *sh, LSMessage *reply, void *ctx);
 
         /* Media this module paused for a call, to be resumed when it ends.
          * mMediaGeneration invalidates the replies of a pause still in flight
@@ -417,6 +428,8 @@ class PalmLegacyManager : public ModuleInterface, private HfpAgent::Listener
         /* Root category -- the org.webosports.service.audio surface that
          * luna-sysmgr's DisplayManager and the Settings app already speak. */
         static bool _getStatus(LSHandle *sh, LSMessage *message, void *ctx);
+        static bool _getSettings(LSHandle *sh, LSMessage *message, void *ctx);
+        static bool _setSettings(LSHandle *sh, LSMessage *message, void *ctx);
         static bool _rootSetVolume(LSHandle *sh, LSMessage *message, void *ctx);
         static bool _rootGetVolume(LSHandle *sh, LSMessage *message, void *ctx);
         static bool _setMute(LSHandle *sh, LSMessage *message, void *ctx);

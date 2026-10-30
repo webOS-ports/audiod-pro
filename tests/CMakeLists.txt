@@ -26,7 +26,8 @@
 # sent to PulseAudio again after it restarted: the cards (cardTable) and
 # the outputs' volumes and mutes (pulseReplay), and what a message to
 # module-palm-policy holds (pulseMessage), whether a call belongs on a
-# hands-free headset (btCall), oFono's hands-free audio agent against a
+# hands-free headset (btCall) and whether one connecting during a call
+# takes it (headsetTakesCall), oFono's hands-free audio agent against a
 # private bus (hfpAgent), stream classes the router sends elsewhere than
 # the rest while an output is in use (classRoute), and the sink a USB
 # headset rings on together with the loudspeaker (usbRing).
@@ -67,7 +68,8 @@ add_executable(audiod-tests
     test_btcall.cpp
     test_hfpagent.cpp
     test_classroute.cpp
-    test_usbring.cpp)
+    test_usbring.cpp
+    test_headsettakescall.cpp)
 target_include_directories(audiod-tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src/modules/bluetoothManager
     ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager

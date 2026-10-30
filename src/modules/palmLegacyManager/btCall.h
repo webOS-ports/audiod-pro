@@ -50,7 +50,12 @@
  *  - a link that could not be opened is not tried again in the same call,
  *    unless the user picks the headset again or another headset connects;
  *  - nothing is on the headset outside a call: the ringtone rings on the
- *    phone and the headset rings by itself on oFono's RING.
+ *    phone and the headset rings by itself on oFono's RING;
+ *  - a headset that connects during a call takes it, unless the user turned
+ *    that off (setTakesCallOnConnect, a setting in Bluetooth Settings): then
+ *    the call stays where it is until the user picks the headset (the route
+ *    button) or the headset takes the audio itself (its button). From the
+ *    next call on, it is a headset like any other.
  */
 class BtCall
 {
@@ -100,6 +105,10 @@ public:
     //! Its Bluetooth address, "" if none.
     std::string address() const;
 
+    //! Whether a headset connecting during a call takes it (the default).
+    void setTakesCallOnConnect(bool takes) { mTakesCallOnConnect = takes; }
+    bool takesCallOnConnect() const { return mTakesCallOnConnect; }
+
     //! Something was plugged into the jack: from now on it is newer than
     //! every headset connected so far.
     void jackPlugged();
@@ -146,6 +155,7 @@ private:
     {
         std::string remote;
         uint64_t seq;       //!< when it connected
+        bool heldBack;      //!< connected during this call, kept out of it
     };
 
     std::map<std::string, Card> mCards;     // path -> card
@@ -156,7 +166,11 @@ private:
     bool mHandsetChosen = false;
     bool mGivenBack = false;
     bool mFailed = false;
+    bool mTakesCallOnConnect = true;
+    bool mInCall = false;   //!< as the last sync() saw it
 
+    //! The headset for the call: the newest not held back, "" if none.
+    std::string callCard() const;
     uint64_t newestCardSeq() const;
 };
 
