@@ -18,6 +18,7 @@
 # Bluetooth manager's bookkeeping (btState) and the call state the legacy
 # manager routes and pauses media by (callState), and whether something is
 # ringing (ringState), when to reconnect to PulseAudio (paReconnect),
+# when a video call goes on the loudspeaker (videoSpeaker),
 # which output a volume request moves (volumeTarget), when an alert lowers
 # the music (duckPolicy), what a WAV file's header says about the sound
 # playSound plays (wavHeader), and stopping on SIGTERM within a deadline
@@ -30,6 +31,7 @@ add_executable(audiod-tests
     ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/callState.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/ringState.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/paReconnect.cpp
+    ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/videoSpeaker.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/masterVolumeManager/volumeTarget.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/audioPolicyManager/duckPolicy.cpp
     ${CMAKE_SOURCE_DIR}/src/wavHeader.cpp
@@ -38,6 +40,7 @@ add_executable(audiod-tests
     test_callstate.cpp
     test_ringstate.cpp
     test_pareconnect.cpp
+    test_videospeaker.cpp
     test_volumetarget.cpp
     test_duckpolicy.cpp
     test_wavheader.cpp

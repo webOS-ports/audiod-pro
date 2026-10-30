@@ -1337,7 +1337,12 @@ void PalmLegacyManager::setActiveOutput(const std::string &sinkName)
                 pa_operation_unref(op);
         }
 
-        notifyStatusSubscribers();
+        /* A headset arriving takes a video call off the loudspeaker it
+         * went to on its own: see followVideo(). */
+        if (mCallMode != eCallMode_None)
+            updateCallMode();
+        else
+            notifyStatusSubscribers();
         return;
     }
 
@@ -1356,7 +1361,11 @@ void PalmLegacyManager::setActiveOutput(const std::string &sinkName)
     else
         mResumeMediaAfterCall = false;
 
-    notifyStatusSubscribers();
+    /* ... and leaving puts a video call back on the loudspeaker. */
+    if (mCallMode != eCallMode_None)
+        updateCallMode();
+    else
+        notifyStatusSubscribers();
 }
 
 void PalmLegacyManager::paBtSinkCb(pa_context *c, const pa_sink_info *info, int eol, void *userdata)
@@ -1553,6 +1562,7 @@ void PalmLegacyManager::sendMediaKey(const char *keyEvent)
 
 void PalmLegacyManager::updateCallMode()
 {
+    followVideo();
     const EPhoneRoute route = effectiveRoute();
 
     /* The bug this guards against, found by decompiling the webOS 3.0.5 audiod
@@ -1594,6 +1604,33 @@ void PalmLegacyManager::updateCallMode()
     notifyStatusSubscribers();
 }
 
+void PalmLegacyManager::followVideo()
+{
+    LegacyCategory *phone = categoryByName("/phone");
+    if (!phone)
+        return;
+
+    /* Only a VoIP call has video of ours; a carrier call that takes over
+     * from a video call goes back to the ear. */
+    VideoSpeaker::Situation now{};
+    now.videoCall = (mCallMode == eCallMode_Voip) && mCallState.video();
+    now.onEarpiece = (phone->route == ePhoneRoute_Earpiece);
+    now.onSpeaker = (phone->route == ePhoneRoute_Speaker);
+    now.headset = jackPlugged() || !mBtAudioSink.empty();
+    now.noSpeaker = mDisabledScenarios.count(scenarioName(phone, ePhoneRoute_Speaker)) > 0;
+
+    const VideoSpeaker::Move move = mVideoSpeaker.update(now);
+    if (move == VideoSpeaker::eMove_None)
+        return;
+
+    phone->route = (move == VideoSpeaker::eMove_Speaker) ? ePhoneRoute_Speaker
+                                                         : ePhoneRoute_Earpiece;
+    PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+        "Video call: %s", move == VideoSpeaker::eMove_Speaker
+            ? "on the loudspeaker" : "back to the earpiece");
+    notifyCategory(phone, "changed");
+}
+
 void PalmLegacyManager::applyCallStatus()
 {
     const ECallMode previous = mCallMode;
@@ -1608,6 +1645,7 @@ void PalmLegacyManager::applyCallStatus()
         LegacyCategory *phone = categoryByName("/phone");
         if (phone && phone->route == ePhoneRoute_Speaker)
             phone->route = ePhoneRoute_Earpiece;
+        mVideoSpeaker.callEnded();
     }
 
     /* Mute belongs to the call too. A call hung up while muted left the
@@ -1658,6 +1696,7 @@ pbnjson::JValue PalmLegacyManager::rootStatus() const
     reply.put("speakerMode", categoryByName("/phone") &&
                              categoryByName("/phone")->route == ePhoneRoute_Speaker);
     reply.put("micMute", mMicMuted);
+    reply.put("videoCall", mCallMode == eCallMode_Voip && mCallState.video());
 
     /* Where audio goes: the shell's headphone indicator and the phone app's
      * route button read these. headsetState is "unknown" both before the
@@ -1866,7 +1905,13 @@ bool PalmLegacyManager::_setCallMode(LSHandle *sh, LSMessage *message, void *ctx
         if (payload["inCall"].isBoolean())
             self->mCallState.setCarrierCall(payload["inCall"].asBool());
         if (payload["speakerMode"].isBoolean())
+        {
             speakerMode = payload["speakerMode"].asBool();
+            /* With inCall it is the phone app starting a cellular call on
+             * the earpiece, not a choice the video call has to respect. */
+            if (!payload["inCall"].isBoolean())
+                self->mVideoSpeaker.userPicked();
+        }
 
         if (phone)
             phone->route = speakerMode ? ePhoneRoute_Speaker : ePhoneRoute_Earpiece;
@@ -2101,6 +2146,7 @@ bool PalmLegacyManager::_setCurrentScenario(LSHandle *sh, LSMessage *message, vo
 
     if (0 == strcmp(cat->category, "/phone"))
     {
+        self->mVideoSpeaker.userPicked();
         /* The decompiled 3.0.5 audiod dropped routing changes outright unless
          * the call was already Active, which silently lost every scenario
          * switch made while a call was still ringing or dialing. Push it
