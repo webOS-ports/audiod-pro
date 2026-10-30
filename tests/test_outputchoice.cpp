@@ -16,6 +16,7 @@
 
 #include <gtest/gtest.h>
 
+#include "btCall.h"
 #include "outputChoice.h"
 #include "videoSpeaker.h"
 
@@ -517,4 +518,97 @@ TEST(OutputChoice, AHeadsetGoneOrNotBackIsNotWaitedFor)
     twice.losePulseAudio();
     twice.losePulseAudio();
     EXPECT_TRUE(twice.waiting());
+}
+
+// Calls and media are routed apart: a call by the legacy manager (BtCall
+// for a hands-free headset, the jack, the earpiece), media by the router
+// (OutputChoice). Neither asks the other, so they must come to the same
+// answer between the jack and a Bluetooth headset by the same rule -
+// whichever was connected last - and neither may move the other.
+namespace
+{
+
+struct CallAndMusic
+{
+    Phone phone;
+    BtCall call;
+    bool jack = false;
+
+    bool callOnHeadset() const
+    {
+        return call.wanted({eCallMode_Carrier, BtCall::Choice::Default, jack});
+    }
+    bool musicOnHeadset() const { return phone.chosen() == "bluetooth_speaker0"; }
+
+    void headset(bool on)
+    {
+        if (on)
+        {
+            call.cardAdded("/hfp/org/bluez/hci0/dev_02_00_00_00_00_01", "02:00:00:00:00:01");
+            phone.connect("bluetooth_speaker0");
+        }
+        else
+        {
+            call.cardRemoved("/hfp/org/bluez/hci0/dev_02_00_00_00_00_01");
+            phone.disconnect("bluetooth_speaker0");
+        }
+    }
+
+    void plug(bool in)
+    {
+        jack = in;
+        if (in)
+        {
+            call.jackPlugged();
+            phone.connect("pcm_headphone");
+        }
+        else
+            phone.disconnect("pcm_headphone");
+    }
+};
+
+}
+
+TEST(OutputChoice, ACallAndTheMusicPickTheSameOfJackAndHeadset)
+{
+    CallAndMusic p;
+    p.phone.connect("pcm_output");
+    p.headset(true);
+    EXPECT_TRUE(p.callOnHeadset());
+    EXPECT_TRUE(p.musicOnHeadset());
+
+    p.plug(true);   // after the headset: the jack has both
+    EXPECT_FALSE(p.callOnHeadset());
+    EXPECT_EQ(p.phone.chosen(), "pcm_headphone");
+
+    p.plug(false);  // out again: back to the headset, both
+    EXPECT_TRUE(p.callOnHeadset());
+    EXPECT_TRUE(p.musicOnHeadset());
+
+    p.headset(false);
+    p.plug(true);
+    p.headset(true); // after the jack: the headset has both
+    EXPECT_TRUE(p.callOnHeadset());
+    EXPECT_TRUE(p.musicOnHeadset());
+
+    p.headset(false); // the jack has both
+    EXPECT_FALSE(p.callOnHeadset());
+    EXPECT_EQ(p.phone.chosen(), "pcm_headphone");
+}
+
+TEST(OutputChoice, APulseAudioRestartLeavesCallAndMusicAgreeing)
+{
+    // The call side does not see PulseAudio restart (oFono and the SCO
+    // link are not PulseAudio's); the music side has to come back to the
+    // same answer.
+    CallAndMusic p;
+    p.phone.connect("pcm_output");
+    p.headset(true);
+    p.plug(true);
+    p.phone.losePulseAudio();
+    p.phone.announce("pcm_headphone");
+    p.phone.announce("pcm_output");
+    p.phone.announce("bluetooth_speaker0");
+    EXPECT_FALSE(p.callOnHeadset());
+    EXPECT_EQ(p.phone.chosen(), "pcm_headphone");
 }
