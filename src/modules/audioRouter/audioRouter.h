@@ -97,6 +97,10 @@ class AudioRouter : public ModuleInterface
 
         std::list<BTInfo> mBTDeviceList;
         OutputChoice::ConnectOrder mOutputConnectOrder;
+        /* How long the audio waits for outputs lost with PulseAudio to be
+         * announced again once it is back (OutputChoice::waiting()). */
+        static constexpr guint AWAIT_LOST_OUTPUTS_SECONDS = 5;
+        guint mAwaitTimer = 0;
         utils::mapSoundDevicesInfo mSoundOutputDeviceInfo;
         utils::mapSoundDevicesInfo mSoundInputDeviceInfo;
 
@@ -113,6 +117,9 @@ class AudioRouter : public ModuleInterface
         void resetInputDeviceRouting(const std::string &deviceName, const int &priority,\
             const std::string &display, utils::EMIXER_TYPE mixerType);
         bool markOutputConnected(const std::string& display, const std::string& deviceName);
+        void routeToChosen();
+        void stopAwaitTimer();
+        static gboolean awaitTimedOut(gpointer data);
         void updateDeviceStatus(const std::string& display, const std::string& deviceName,\
             const bool& isConnected, bool const& isActive, const bool& isOutput);
         void printDeviceInfo(const bool& isOutput);

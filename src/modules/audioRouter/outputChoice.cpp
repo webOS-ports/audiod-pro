@@ -45,7 +45,7 @@ std::string OutputChoice::routeOnAnnounce(const std::vector<Output> &outputs,
                                           const std::string &announced)
 {
     const std::string chosen = choose(outputs);
-    if (chosen.empty() || announced.empty())
+    if (chosen.empty() || announced.empty() || waiting(outputs))
         return std::string();
     if (chosen == announced)
         return chosen;
@@ -55,6 +55,24 @@ std::string OutputChoice::routeOnAnnounce(const std::vector<Output> &outputs,
             return output.sink == announced ? chosen : std::string();
     }
     return std::string();
+}
+
+bool OutputChoice::waiting(const std::vector<Output> &outputs)
+{
+    const std::string chosen = choose(outputs);
+    std::uint64_t chosenAt = 0;
+    for (const Output &output : outputs)
+    {
+        if (output.name == chosen && output.connected && output.removable)
+            chosenAt = output.connectedAt;
+    }
+    for (const Output &output : outputs)
+    {
+        if (output.awaited && !output.connected && output.removable &&
+            output.connectedAt > chosenAt)
+            return true;
+    }
+    return false;
 }
 
 std::uint64_t OutputChoice::ConnectOrder::stamp(std::uint64_t current)

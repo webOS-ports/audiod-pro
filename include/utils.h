@@ -259,6 +259,9 @@ namespace utils
         /* The sink the output plays through when it has none of its own
          * name: on LuneOS the headphone jack is a port of pcm_output. */
         std::string sinkName;
+        /* Connected when PulseAudio went away, and not announced again by
+         * the next one yet: see OutputChoice::Output::awaited. */
+        bool awaited;
         deviceInfo()
         {
             activeStatus = false;
@@ -272,6 +275,7 @@ namespace utils
             isConnected  = false;
             removable = false;
             connectedAt = 0;
+            awaited = false;
         }
     }DEVICE_INFO_T;
 

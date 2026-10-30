@@ -40,6 +40,7 @@ public:
         OutputChoice::Output &o = find(name);
         o.connectedAt = mOrder.stamp(o.connectedAt);
         o.connected = true;
+        o.awaited = false;
     }
 
     void disconnect(const std::string &name)
@@ -47,15 +48,33 @@ public:
         OutputChoice::Output &o = find(name);
         o.connected = false;
         o.connectedAt = 0;
+        o.awaited = false;
     }
 
     // PulseAudio went away: the router marks every output disconnected
-    // (AudioRouter::eventMixerStatus), and keeps their connect stamps.
+    // (AudioRouter::eventMixerStatus), keeps their connect stamps, and
+    // awaits the removable ones that were connected.
     void losePulseAudio()
     {
         for (auto &o : mOutputs)
+        {
+            o.awaited = (o.connected || o.awaited) && o.removable && o.connectedAt != 0;
             o.connected = false;
+        }
     }
+
+    // The router gave up waiting (AudioRouter::awaitTimedOut).
+    void stopWaiting()
+    {
+        for (auto &o : mOutputs)
+            if (o.awaited)
+            {
+                o.awaited = false;
+                o.connectedAt = 0;
+            }
+    }
+
+    bool waiting() const { return OutputChoice::waiting(mOutputs); }
 
     std::string chosen() const { return OutputChoice::choose(mOutputs); }
 
@@ -371,16 +390,19 @@ TEST(OutputChoice, PcmOutputBackAfterARestartCarriesTheHeadphones)
     EXPECT_EQ(phone.announce("pcm_output"), "pcm_headphone");
     EXPECT_EQ(phone.chosen(), "pcm_headphone");
 
-    // Without the jack told again, pcm_output alone would have the audio
-    // and a Bluetooth headset coming back would take it from the
-    // headphones it was connected before.
+    // Without the jack told again, the audio would wait for the
+    // headphones (TheAudioWaitsForTheHeadsetAfterARestart) until the
+    // router gives up on them, and then a Bluetooth headset coming back
+    // would take it from the headphones it was connected before.
     Phone untold;
     untold.announce("pcm_output");
     untold.announce("bluetooth_speaker0");
     untold.announce("pcm_headphone");
     untold.losePulseAudio();
-    untold.announce("pcm_output");
-    EXPECT_EQ(untold.announce("bluetooth_speaker0"), "bluetooth_speaker0");
+    EXPECT_EQ(untold.announce("pcm_output"), "");
+    EXPECT_EQ(untold.announce("bluetooth_speaker0"), "");
+    untold.stopWaiting();
+    EXPECT_EQ(untold.chosen(), "bluetooth_speaker0");
 }
 
 TEST(OutputChoice, ASinkTheChosenOneDoesNotPlayThroughChangesNothing)
@@ -394,4 +416,105 @@ TEST(OutputChoice, ASinkTheChosenOneDoesNotPlayThroughChangesNothing)
     EXPECT_EQ(phone.announce("bluetooth_speaker0"), "");
     EXPECT_EQ(phone.announce("usb_speaker0"), "usb_speaker0");
     EXPECT_EQ(phone.announce("pcm_output"), "");
+}
+
+TEST(OutputChoice, TheAudioWaitsForTheHeadsetAfterARestart)
+{
+    // Music (or a video call) in a Bluetooth headset, PulseAudio restarts:
+    // pcm_output is announced again before the headset's sink. Routing to
+    // it then would put the audio on the loudspeaker until the headset is
+    // back, and the legacy manager would take the headset for gone.
+    Phone phone;
+    phone.announce("pcm_output");
+    phone.announce("bluetooth_speaker0");
+    phone.losePulseAudio();
+    EXPECT_TRUE(phone.waiting());
+    EXPECT_EQ(phone.announce("pcm_output"), "");
+    EXPECT_EQ(phone.announce("bluetooth_speaker0"), "bluetooth_speaker0");
+    EXPECT_FALSE(phone.waiting());
+
+    // The same for a USB headset.
+    Phone usb;
+    usb.announce("pcm_output");
+    usb.announce("usb_speaker0");
+    usb.losePulseAudio();
+    EXPECT_EQ(usb.announce("pcm_output"), "");
+    EXPECT_EQ(usb.announce("usb_speaker0"), "usb_speaker0");
+
+    // Whenever pcm_output was announced first: the speaker is no removable
+    // output, its own connect stamp does not count.
+    Phone early;
+    early.announce("bluetooth_speaker0");
+    early.announce("pcm_output");
+    EXPECT_EQ(early.chosen(), "bluetooth_speaker0");
+    early.losePulseAudio();
+    EXPECT_EQ(early.announce("pcm_output"), "");
+}
+
+TEST(OutputChoice, OnlyAnOutputThatWouldWinIsWaitedFor)
+{
+    // Headphones plugged in after the headset: told again at once, they
+    // have the audio, and the headset coming back later changes nothing.
+    Phone phone;
+    phone.announce("pcm_output");
+    phone.announce("bluetooth_speaker0");
+    phone.announce("pcm_headphone");
+    phone.losePulseAudio();
+    EXPECT_EQ(phone.announce("pcm_headphone"), "pcm_headphone");
+    EXPECT_FALSE(phone.waiting());
+    EXPECT_EQ(phone.announce("pcm_output"), "pcm_headphone");
+    EXPECT_EQ(phone.announce("bluetooth_speaker0"), "");
+
+    // The headset connected after the headphones is waited for, also with
+    // the headphones back already.
+    Phone later;
+    later.announce("pcm_output");
+    later.announce("pcm_headphone");
+    later.announce("bluetooth_speaker0");
+    later.losePulseAudio();
+    EXPECT_EQ(later.announce("pcm_headphone"), "");
+    EXPECT_EQ(later.announce("pcm_output"), "");
+    EXPECT_EQ(later.announce("bluetooth_speaker0"), "bluetooth_speaker0");
+
+    // With only the speaker there is nothing to wait for.
+    Phone speaker;
+    speaker.announce("pcm_output");
+    speaker.losePulseAudio();
+    EXPECT_FALSE(speaker.waiting());
+    EXPECT_EQ(speaker.announce("pcm_output"), "pcm_output");
+}
+
+TEST(OutputChoice, AHeadsetGoneOrNotBackIsNotWaitedFor)
+{
+    // Disconnected while PulseAudio was away: not waited for.
+    Phone gone;
+    gone.announce("pcm_output");
+    gone.announce("bluetooth_speaker0");
+    gone.losePulseAudio();
+    gone.disconnect("bluetooth_speaker0");
+    EXPECT_FALSE(gone.waiting());
+    EXPECT_EQ(gone.announce("pcm_output"), "pcm_output");
+
+    // Not back in time: the router stops waiting, the speaker has it, and
+    // the headset counts as new when it does come.
+    Phone late;
+    late.announce("pcm_output");
+    late.announce("bluetooth_speaker0");
+    late.announce("pcm_headphone");
+    late.losePulseAudio();
+    EXPECT_EQ(late.announce("pcm_output"), "");
+    late.stopWaiting();
+    EXPECT_FALSE(late.waiting());
+    EXPECT_EQ(late.chosen(), "pcm_output");
+    EXPECT_EQ(late.announce("pcm_headphone"), "pcm_headphone");
+    EXPECT_EQ(late.announce("bluetooth_speaker0"), "bluetooth_speaker0");
+
+    // A second restart before the first one's outputs are back still
+    // waits for them.
+    Phone twice;
+    twice.announce("pcm_output");
+    twice.announce("bluetooth_speaker0");
+    twice.losePulseAudio();
+    twice.losePulseAudio();
+    EXPECT_TRUE(twice.waiting());
 }
