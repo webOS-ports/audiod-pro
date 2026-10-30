@@ -29,6 +29,11 @@ bool VolumeTarget::isBluetoothOutput(const std::string &name)
     return name.compare(0, 9, "bluetooth") == 0;
 }
 
+bool VolumeTarget::isUsbOutput(const std::string &name)
+{
+    return name.compare(0, 11, "usb_speaker") == 0;
+}
+
 std::string VolumeTarget::output(const std::string &requested, const std::string &active,
                                  bool requestedConnected, bool bluetoothAudio)
 {
@@ -36,13 +41,16 @@ std::string VolumeTarget::output(const std::string &requested, const std::string
     {
         if (bluetoothAudio)
             return kBluetoothOutput;
-        if (isBluetoothOutput(active))
+        if (isBluetoothOutput(active) || isUsbOutput(active))
             return active;
         return requested;
     }
 
     if (isBluetoothOutput(requested) && !requestedConnected && !bluetoothAudio)
         return active.empty() ? std::string(kBuiltInOutput) : active;
+
+    if (isUsbOutput(requested) && !requestedConnected)
+        return reported(active, bluetoothAudio);
 
     return requested;
 }

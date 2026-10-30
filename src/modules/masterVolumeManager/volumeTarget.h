@@ -35,11 +35,19 @@
  * missed when the headset was connected before audiod started, which left
  * the volume on pcm_output. With a wired headset in as well, Bluetooth still
  * has the music, so it has the volume too.
+ *
+ * A USB headset is the same: while it is the active output, pcm_output means
+ * it, and a client naming it after it was unplugged gets the active output.
  */
 namespace VolumeTarget
 {
     //! Whether name is one of the Bluetooth outputs (bluetooth_speaker0, ...).
     bool isBluetoothOutput(const std::string &name);
+
+    //! Whether name is one of the USB headset outputs (usb_speaker0, ...).
+    //! Like a Bluetooth headset, a USB one has a sink and a volume of its own,
+    //! and it is what the volume keys have to move while it plays the audio.
+    bool isUsbOutput(const std::string &name);
 
     //! The Bluetooth output's name; audiod has one for whichever headset.
     extern const char kBluetoothOutput[];
