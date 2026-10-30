@@ -1218,6 +1218,7 @@ void OSEMasterVolumeManager::muteVolume(LSHandle *lshandle, LSMessage *message, 
 
     msg.get("soundOutput", soundOutput);
     msg.get("mute", mute);
+    soundOutput = volumeTargetOf(soundOutput);
 
     if (isValidSoundDevice(soundOutput, true))
     {
@@ -1645,6 +1646,11 @@ bool OSEMasterVolumeManager::_muteVolumeCallBackPA(LSHandle *sh, LSMessage *repl
     OSEMasterVolumeManager* OSEMasterVolumeManagerObj = (OSEMasterVolumeManager*)envelope->context;
 
     std::string callerId = LSMessageGetSenderServiceName(message);
+
+    /* The message names what the client asked for; the mute is the
+     * output's muteVolume moved. */
+    soundOutput = OSEMasterVolumeManagerObj->volumeTargetOf(soundOutput);
+
     if(soundOutput == "alsa")
     {
         soundOutput = OSEMasterVolumeManagerObj->getActiveDevice(display,true);
