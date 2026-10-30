@@ -29,6 +29,12 @@
 
 #define MASTER_GET_VOLUME       "luna://com.webos.service.audio/master/getVolume"
 #define MASTER_URI_PREFIX       "luna://com.webos.service.audio/master/"
+/* Where audiod keeps its settings: as OSEMasterVolumeManager does. */
+#define SETTINGS_GET            "luna://com.webos.service.settings/getSystemSettings"
+#define SETTINGS_SET            "luna://com.webos.service.settings/setSystemSettings"
+#define SETTINGS_CATEGORY       "sound"
+#define SETTING_HEADSET_TAKES_CALL "bluetoothHeadsetTakesCall"
+#define KEY_ROOT_SETTINGS       "/getSettings"
 
 #define MEDIA_SESSIONS_URI      "luna://com.webos.service.mediacontroller/getActiveMediaSessions"
 #define MEDIA_PLAY_STATUS_URI   "luna://com.webos.service.mediacontroller/getMediaPlayStatus"
@@ -90,6 +96,7 @@ PalmLegacyManager::PalmLegacyManager(ModuleConfig* const pConfObj) :
     mBtAudioName(""),
     mUsbAudioSink(""),
     mHfpAgent(nullptr),
+    mHeadsetTakesCall(true),
     mResumeMediaAfterCall(false),
     mMediaGeneration(0),
     mPaMainloop(nullptr),
@@ -145,6 +152,8 @@ LSHandle *PalmLegacyManager::legacyHandle() const
 
 LSMethod PalmLegacyManager::rootMethods[] = {
     { "getStatus",      PalmLegacyManager::_getStatus },
+    { "getSettings",    PalmLegacyManager::_getSettings, LUNA_METHOD_FLAGS_NONE },
+    { "setSettings",    PalmLegacyManager::_setSettings, LUNA_METHOD_FLAGS_NONE },
     { "status",         PalmLegacyManager::_getStatus },
     { "setVolume",      PalmLegacyManager::_rootSetVolume },
     { "getVolume",      PalmLegacyManager::_rootGetVolume },
@@ -512,6 +521,8 @@ void PalmLegacyManager::initialize()
         mObjModuleManager->subscribeModuleEvent(this, utils::eEventActiveDeviceInfo);
         /* PulseAudio coming back: see tellRouterJack(). */
         mObjModuleManager->subscribeModuleEvent(this, utils::eEventMixerStatus);
+        /* settingsservice coming up: the stored settings can be read. */
+        mObjModuleManager->subscribeServerStatusInfo(this, eSettingsService2);
     }
 
     if (!mPalmHandle && !mPortsHandle)
@@ -592,6 +603,14 @@ void PalmLegacyManager::handleEvent(events::EVENTS_T* ev)
              * reaches the router from here, on a change: tell it again. */
             if (status->mixerStatus && status->mixerType == utils::ePulseMixer && jackPlugged())
                 tellRouterJack();
+        }
+        break;
+        case utils::eEventServerStatusSubscription:
+        {
+            const events::EVENT_SERVER_STATUS_INFO_T *status =
+                (const events::EVENT_SERVER_STATUS_INFO_T*) ev;
+            if (status->serviceName == eSettingsService2 && status->connectionStatus)
+                readStoredSettings();
         }
         break;
         default:
@@ -2271,6 +2290,127 @@ bool PalmLegacyManager::_getStatus(LSHandle *sh, LSMessage *message, void *ctx)
         reply.put("subscribed", true);
 
     replyJson(sh, message, reply);
+    return true;
+}
+
+/* ------------------------------------------------------------------------- *
+ * Settings: getSettings / setSettings, kept in settingsservice
+ * ------------------------------------------------------------------------- */
+
+pbnjson::JValue PalmLegacyManager::settingsReply() const
+{
+    pbnjson::JValue reply = pbnjson::Object();
+    reply.put("returnValue", true);
+    reply.put(SETTING_HEADSET_TAKES_CALL, mHeadsetTakesCall.value());
+    return reply;
+}
+
+void PalmLegacyManager::applySettings()
+{
+    mBtCall.setTakesCallOnConnect(mHeadsetTakesCall.value());
+    postCategoryStatus(KEY_ROOT_SETTINGS, settingsReply());
+}
+
+void PalmLegacyManager::readStoredSettings()
+{
+    CLSError lserror;
+    LSHandle *sh = GetPalmService();
+    pbnjson::JValue keys = pbnjson::Array();
+    keys.append(SETTING_HEADSET_TAKES_CALL);
+    pbnjson::JValue payload = pbnjson::Object();
+    payload.put("category", SETTINGS_CATEGORY);
+    payload.put("keys", keys);
+    if (!sh || !LSCallOneReply(sh, SETTINGS_GET, payload.stringify().c_str(),
+                               &PalmLegacyManager::_storedSettingsCb, this, nullptr, &lserror))
+    {
+        lserror.Print(__FUNCTION__, __LINE__);
+        PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+            "Could not read the stored settings; using the defaults");
+    }
+}
+
+bool PalmLegacyManager::_storedSettingsCb(LSHandle *, LSMessage *reply, void *ctx)
+{
+    PalmLegacyManager *self = static_cast<PalmLegacyManager*>(ctx);
+    const char *payload = reply ? LSMessageGetPayload(reply) : nullptr;
+    if (!self || !payload)
+        return true;
+
+    /* A key never stored comes back missing (or the call fails): the
+     * default stays. */
+    pbnjson::JValue obj = pbnjson::JDomParser::fromString(payload);
+    bool takes = true;
+    if (obj.isObject() && obj["settings"].isObject() &&
+        obj["settings"][SETTING_HEADSET_TAKES_CALL].isBoolean() &&
+        obj["settings"][SETTING_HEADSET_TAKES_CALL].asBool(takes) == CONV_OK)
+    {
+        PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+            "Stored setting %s: %d", SETTING_HEADSET_TAKES_CALL, (int) takes);
+        if (self->mHeadsetTakesCall.stored(takes))
+            self->applySettings();
+    }
+    return true;
+}
+
+void PalmLegacyManager::storeSettings()
+{
+    CLSError lserror;
+    LSHandle *sh = GetPalmService();
+    pbnjson::JValue settings = pbnjson::Object();
+    settings.put(SETTING_HEADSET_TAKES_CALL, mHeadsetTakesCall.value());
+    pbnjson::JValue payload = pbnjson::Object();
+    payload.put("category", SETTINGS_CATEGORY);
+    payload.put("settings", settings);
+    if (!sh || !LSCall(sh, SETTINGS_SET, payload.stringify().c_str(), nullptr, nullptr, nullptr, &lserror))
+    {
+        lserror.Print(__FUNCTION__, __LINE__);
+        PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+            "Could not store the settings; they last until audiod restarts");
+    }
+}
+
+bool PalmLegacyManager::_getSettings(LSHandle *sh, LSMessage *message, void * /*ctx*/)
+{
+    PalmLegacyManager *self = getPalmLegacyManagerInstance();
+    CLSError lserror;
+    bool subscribed = false;
+
+    if (!LSSubscriptionProcess(sh, message, &subscribed, &lserror))
+        lserror.Print(__FUNCTION__, __LINE__);
+
+    pbnjson::JValue reply = self ? self->settingsReply() : pbnjson::Object();
+    if (!self)
+        reply.put("returnValue", false);
+    if (subscribed)
+        reply.put("subscribed", true);
+
+    replyJson(sh, message, reply);
+    return true;
+}
+
+bool PalmLegacyManager::_setSettings(LSHandle *sh, LSMessage *message, void * /*ctx*/)
+{
+    PalmLegacyManager *self = getPalmLegacyManagerInstance();
+    LSMessageJsonParser msg(message, SCHEMA_1(REQUIRED(bluetoothHeadsetTakesCall, boolean)));
+    if (!msg.parse(__FUNCTION__, sh))
+        return true;
+
+    bool takes = true;
+    msg.get(SETTING_HEADSET_TAKES_CALL, takes);
+
+    if (self)
+    {
+        PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+            "Setting %s: %d", SETTING_HEADSET_TAKES_CALL, (int) takes);
+        const bool changed = self->mHeadsetTakesCall.set(takes);
+        /* Stored also when unchanged: the stored value may still be the
+         * default's absence, or older than what the user sees. */
+        self->storeSettings();
+        if (changed)
+            self->applySettings();
+    }
+
+    replySuccess(sh, message);
     return true;
 }
 

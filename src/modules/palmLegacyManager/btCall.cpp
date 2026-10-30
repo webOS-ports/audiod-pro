@@ -21,7 +21,16 @@ bool BtCall::cardAdded(const std::string &path, const std::string &remote)
     if (path.empty() || mCards.count(path))
         return false;
 
-    mCards[path] = Card{remote, ++mSeq};
+    /* With the setting off, a headset that connects during a call is
+     * connected, but the call stays where it is: nothing the user chose
+     * for this call is undone either. */
+    if (mInCall && !mTakesCallOnConnect)
+    {
+        mCards[path] = Card{remote, ++mSeq, true};
+        return true;
+    }
+
+    mCards[path] = Card{remote, ++mSeq, false};
 
     /* A headset that has just connected is the newest thing: it takes the
      * call from the earpiece and the jack, also from an explicit earpiece
@@ -58,10 +67,25 @@ uint64_t BtCall::newestCardSeq() const
     uint64_t newest = 0;
     for (const auto &c : mCards)
     {
-        if (c.second.seq > newest)
+        if (!c.second.heldBack && c.second.seq > newest)
             newest = c.second.seq;
     }
     return newest;
+}
+
+std::string BtCall::callCard() const
+{
+    const std::string *best = nullptr;
+    uint64_t newest = 0;
+    for (const auto &c : mCards)
+    {
+        if (!c.second.heldBack && (!best || c.second.seq > newest))
+        {
+            best = &c.first;
+            newest = c.second.seq;
+        }
+    }
+    return best ? *best : std::string();
 }
 
 std::string BtCall::card() const
@@ -99,12 +123,16 @@ void BtCall::chose(Choice choice)
     {
         mGivenBack = false;
         mFailed = false;
+        /* Picking the headset picks the one connected last, also one kept
+         * out of the call so far. */
+        for (auto &c : mCards)
+            c.second.heldBack = false;
     }
 }
 
 bool BtCall::wanted(const Situation &s) const
 {
-    if (s.mode == eCallMode_None || !available() || mFailed)
+    if (s.mode == eCallMode_None || callCard().empty() || mFailed)
         return false;
 
     switch (s.choice)
@@ -126,16 +154,17 @@ bool BtCall::wanted(const Situation &s) const
 
 BtCall::Action BtCall::sync(const Situation &s)
 {
+    mInCall = (s.mode != eCallMode_None);
     const bool want = wanted(s);
 
     if (want && mSco == Sco::Down)
     {
         mSco = Sco::Connecting;
-        mScoCard = card();
+        mScoCard = callCard();
         return Action::Connect;
     }
 
-    if (want && mSco == Sco::Up && mScoCard != card())
+    if (want && mSco == Sco::Up && mScoCard != callCard())
     {
         /* Another headset connected since: last connected wins, so drop
          * this link; the next sync() opens one to the new headset. */
@@ -219,4 +248,7 @@ void BtCall::callEnded()
     mHandsetChosen = false;
     mGivenBack = false;
     mFailed = false;
+    mInCall = false;
+    for (auto &c : mCards)
+        c.second.heldBack = false;
 }
