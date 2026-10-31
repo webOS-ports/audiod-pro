@@ -3214,25 +3214,24 @@ bool PalmLegacyManager::_telephonyAnswered(LSHandle *sh, LSMessage *message, voi
 bool PalmLegacyManager::_playDTMF(LSHandle *sh, LSMessage *message, void *ctx)
 {
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
-    /* The dialpad sends {"id":"5","oneshot":true,"feedbackOnly":false} -- "id",
-     * not "name", and the other two decide whether the tone also has to reach
-     * the far end. */
-    LSMessageJsonParser msg(message, SCHEMA_4(REQUIRED(id, string),
-                                              OPTIONAL(oneshot, boolean),
-                                              OPTIONAL(feedbackOnly, boolean),
-                                              OPTIONAL(name, string)));
+    /* enyo's dialpad sends {"id":"5","oneshot":true,"feedbackOnly":false}, the
+     * QML Phone app {"name":"5"} (with "feedbackOnly":true in a call); the
+     * other two decide whether the tone also has to reach the far end. */
+    LSMessageJsonParser msg(message, LegacyRequest::PLAY_DTMF);
     if (!msg.parse(__FUNCTION__, sh))
         return true;
 
-    std::string id;
-    bool oneshot = true;
-    bool feedbackOnly = false;
-
-    if (!msg.get("id", id))
-        msg.get("name", id);
-    if (!msg.get("oneshot", oneshot))
-        oneshot = true;
-    msg.get("feedbackOnly", feedbackOnly);
+    /* Without id or name there is nothing to play: '{}' sent the network an
+     * empty tone sequence during a call and answered success. */
+    const std::optional<std::string> keys = LegacyRequest::dtmfKeys(msg.get());
+    if (!keys || keys->empty())
+    {
+        replyInvalid(sh, message, "id (or name) must name the dialpad keys to play");
+        return true;
+    }
+    const std::string id = *keys;
+    const bool oneshot = LegacyRequest::boolean(msg.get(), "oneshot").value_or(true);
+    const bool feedbackOnly = LegacyRequest::boolean(msg.get(), "feedbackOnly").value_or(false);
 
     CLSError lserror;
     for (const char ch : id)
@@ -3359,21 +3358,20 @@ bool PalmLegacyManager::_playFeedback(LSHandle *sh, LSMessage *message, void *ct
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
     /* Matches the Palm schema: enyo passes override and type on some paths and
      * an additionalProperties:false schema without them rejects the call. */
-    LSMessageJsonParser msg(message, SCHEMA_5(REQUIRED(name, string),
-                                              OPTIONAL(sink, string),
-                                              OPTIONAL(play, boolean),
-                                              OPTIONAL(override, boolean),
-                                              OPTIONAL(type, string)));
+    LSMessageJsonParser msg(message, LegacyRequest::PLAY_FEEDBACK);
     if (!msg.parse(__FUNCTION__, sh))
         return true;
 
-    std::string name;
-    std::string sinkName;
-    bool play = true;
-    msg.get("name", name);
-    msg.get("sink", sinkName);
-    if (!msg.get("play", play))
-        play = true;
+    /* '{}' played the sound "" and answered success. */
+    const std::optional<std::string> sound = LegacyRequest::string(msg.get(), "name");
+    if (!sound || sound->empty())
+    {
+        replyInvalid(sh, message, "name must name a system sound");
+        return true;
+    }
+    const std::string name = *sound;
+    const std::string sinkName = LegacyRequest::string(msg.get(), "sink").value_or(std::string());
+    const bool play = LegacyRequest::boolean(msg.get(), "play").value_or(true);
 
     if (play && self && self->mObjAudioMixer)
     {
