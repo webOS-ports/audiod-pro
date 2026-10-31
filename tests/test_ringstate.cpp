@@ -61,12 +61,18 @@ TEST(RingState, ACorkedRingtoneIsSilent)
     EXPECT_FALSE(state.ringing());
 }
 
+// Key clicks, the voice of a call and streams with no tag are none of
+// ringing, alerts or music.
 TEST(RingState, OtherStreamsChangeNothing)
 {
     RingState state;
-    EXPECT_FALSE(state.streamSeen(3, "pmedia", false));
+    EXPECT_FALSE(state.streamSeen(3, "pfeedback", false));
     EXPECT_FALSE(state.streamSeen(4, nullptr, false));
+    EXPECT_FALSE(state.streamSeen(5, "voipcall", false));
     EXPECT_FALSE(state.ringing());
+    EXPECT_FALSE(state.alerting());
+    EXPECT_FALSE(state.mediaPlaying());
+    EXPECT_FALSE(state.speakerWanted(true));
     EXPECT_FALSE(state.streamGone(3));
     EXPECT_FALSE(state.streamGone(99));
 }
@@ -113,6 +119,164 @@ TEST(RingState, TheLoudspeakerOnlyOutsideACall)
     EXPECT_FALSE(RingState::speakerToo(eCallMode_Carrier, true));
     EXPECT_FALSE(RingState::speakerToo(eCallMode_Voip, true));
     EXPECT_FALSE(RingState::speakerToo(eCallMode_Carrier, false));
+}
+
+// The alerts are what module-palm-policy tags "palerts", "pnotifications" and
+// "pcalendar" (legacy webOS's mask 0x803); the music "pmedia" and
+// "pdefaultapp".
+TEST(RingState, AlertsAndMusicAreTold)
+{
+    EXPECT_TRUE(RingState::isAlertType("palerts"));
+    EXPECT_TRUE(RingState::isAlertType("pnotifications"));
+    EXPECT_TRUE(RingState::isAlertType("pcalendar"));
+    EXPECT_FALSE(RingState::isAlertType("pringtones"));
+    EXPECT_FALSE(RingState::isAlertType("palarm"));
+    EXPECT_FALSE(RingState::isAlertType("pmedia"));
+    EXPECT_FALSE(RingState::isAlertType("pfeedback"));
+    EXPECT_FALSE(RingState::isAlertType("palerts2"));
+    EXPECT_FALSE(RingState::isAlertType(""));
+    EXPECT_FALSE(RingState::isAlertType(nullptr));
+
+    EXPECT_TRUE(RingState::isMediaType("pmedia"));
+    EXPECT_TRUE(RingState::isMediaType("pdefaultapp"));
+    EXPECT_FALSE(RingState::isMediaType("pnotifications"));
+    EXPECT_FALSE(RingState::isMediaType("pringtones"));
+    EXPECT_FALSE(RingState::isMediaType("ptts"));
+    EXPECT_FALSE(RingState::isMediaType(""));
+    EXPECT_FALSE(RingState::isMediaType(nullptr));
+}
+
+// A ringtone or an alarm goes to the loudspeaker as well, ringer switch or
+// not (a silenced ringtone is muted, not moved).
+TEST(RingState, ARingWantsTheLoudspeaker)
+{
+    RingState state;
+    EXPECT_FALSE(state.speakerWanted(true));
+    state.streamSeen(7, "pringtones", false);
+    EXPECT_TRUE(state.speakerWanted(true));
+    EXPECT_TRUE(state.speakerWanted(false));
+    state.streamGone(7);
+    state.streamSeen(8, "palarm", false);
+    EXPECT_TRUE(state.speakerWanted(false));
+}
+
+// A notification with headphones in: the loudspeaker too with the ringer
+// switch on, the headphones alone with it off. It is no ringing.
+TEST(RingState, AnAlertWantsTheLoudspeakerWithTheRingerOn)
+{
+    RingState state;
+    EXPECT_TRUE(state.streamSeen(5, "pnotifications", false));
+    EXPECT_TRUE(state.alerting());
+    EXPECT_FALSE(state.ringing());
+    EXPECT_TRUE(state.speakerWanted(true));
+    EXPECT_FALSE(state.speakerWanted(false));
+    EXPECT_TRUE(state.streamGone(5));
+    EXPECT_FALSE(state.alerting());
+    EXPECT_FALSE(state.speakerWanted(true));
+}
+
+TEST(RingState, ACorkedAlertIsSilent)
+{
+    RingState state;
+    EXPECT_FALSE(state.streamSeen(5, "palerts", true));
+    EXPECT_FALSE(state.speakerWanted(true));
+    EXPECT_TRUE(state.streamSeen(5, "palerts", false));
+    EXPECT_TRUE(state.speakerWanted(true));
+}
+
+// The jack and the loudspeaker are one port: while music plays an alert
+// stays in the headphones, or the music would be heard out loud too. Once
+// the music is paused or gone, the next alert has the loudspeaker again.
+TEST(RingState, AnAlertStaysInTheHeadphonesWhileMusicPlays)
+{
+    RingState state;
+    EXPECT_TRUE(state.streamSeen(3, "pmedia", false));
+    EXPECT_TRUE(state.mediaPlaying());
+    EXPECT_FALSE(state.speakerWanted(true));
+    EXPECT_TRUE(state.streamSeen(5, "pcalendar", false));
+    EXPECT_FALSE(state.speakerWanted(true));
+
+    // Paused: that is a change the manager has to act on.
+    EXPECT_TRUE(state.streamSeen(3, "pmedia", true));
+    EXPECT_FALSE(state.mediaPlaying());
+    EXPECT_TRUE(state.speakerWanted(true));
+
+    EXPECT_TRUE(state.streamSeen(4, "pdefaultapp", false));
+    EXPECT_FALSE(state.speakerWanted(true));
+    EXPECT_TRUE(state.streamGone(4));
+    EXPECT_TRUE(state.speakerWanted(true));
+}
+
+// A call or an alarm is not missed for the music: those ring on the
+// loudspeaker with music playing as well.
+TEST(RingState, ARingGoesToTheLoudspeakerOverMusic)
+{
+    RingState state;
+    state.streamSeen(3, "pmedia", false);
+    state.streamSeen(7, "pringtones", false);
+    EXPECT_TRUE(state.speakerWanted(true));
+    EXPECT_TRUE(state.speakerWanted(false));
+}
+
+// Music starting or stopping alone is reported, so an alert already playing
+// moves; a second music stream is no change.
+TEST(RingState, MusicComingAndGoingIsAChange)
+{
+    RingState state;
+    EXPECT_TRUE(state.streamSeen(3, "pmedia", false));
+    EXPECT_FALSE(state.streamSeen(4, "pmedia", false));
+    EXPECT_FALSE(state.streamGone(3));
+    EXPECT_TRUE(state.streamGone(4));
+}
+
+// A second alert, or one while the phone rings, is no change of its own.
+TEST(RingState, AlertsAndRingsTogether)
+{
+    RingState state;
+    EXPECT_TRUE(state.streamSeen(5, "palerts", false));
+    EXPECT_FALSE(state.streamSeen(6, "pnotifications", false));
+    EXPECT_TRUE(state.streamSeen(7, "pringtones", false));
+    EXPECT_FALSE(state.streamGone(5));
+    EXPECT_TRUE(state.streamGone(7));
+    EXPECT_TRUE(state.speakerWanted(true));
+    EXPECT_TRUE(state.streamGone(6));
+    EXPECT_FALSE(state.speakerWanted(true));
+}
+
+TEST(RingState, PulseAudioGoingAwayEndsAlertsAndMusic)
+{
+    RingState state;
+    state.streamSeen(3, "pmedia", false);
+    state.streamSeen(5, "palerts", false);
+    state.clear();
+    EXPECT_FALSE(state.alerting());
+    EXPECT_FALSE(state.mediaPlaying());
+    // An old index is a new stream, of whatever kind it says now.
+    EXPECT_TRUE(state.streamSeen(3, "palerts", false));
+    EXPECT_TRUE(state.speakerWanted(true));
+}
+
+// The same index reported with another tag counts as that kind only.
+TEST(RingState, AStreamIsOneKindAtATime)
+{
+    RingState state;
+    state.streamSeen(3, "pmedia", false);
+    EXPECT_TRUE(state.streamSeen(3, "pnotifications", false));
+    EXPECT_FALSE(state.mediaPlaying());
+    EXPECT_TRUE(state.alerting());
+    EXPECT_TRUE(state.streamSeen(3, "pringtones", false));
+    EXPECT_FALSE(state.alerting());
+    EXPECT_TRUE(state.ringing());
+}
+
+// An alert during a call stays in the ear, as a ring does.
+TEST(RingState, AnAlertInACallStaysInTheEar)
+{
+    RingState state;
+    state.streamSeen(5, "palerts", false);
+    EXPECT_TRUE(RingState::speakerToo(eCallMode_None, state.speakerWanted(true)));
+    EXPECT_FALSE(RingState::speakerToo(eCallMode_Carrier, state.speakerWanted(true)));
+    EXPECT_FALSE(RingState::speakerToo(eCallMode_Voip, state.speakerWanted(true)));
 }
 
 } // namespace

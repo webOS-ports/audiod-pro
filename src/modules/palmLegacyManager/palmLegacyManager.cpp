@@ -869,13 +869,14 @@ void PalmLegacyManager::paContextStateCb(pa_context *c, void *userdata)
             {
                 self->mAppliedCallMode = self->mCallMode;
                 self->mAppliedRoute = self->effectiveRoute();
-                self->mAppliedRing = self->mRingState.ringing();
+                self->mAppliedRing = self->mRingState.speakerWanted(self->mRingerOn);
             }
 
             /* Follow the jack from here on. Port availability changes arrive
              * as sink and source change events; the initial walk picks up
              * whatever is plugged in already, including at boot. Sink-input
-             * events say when a ringtone or alarm starts and stops. */
+             * events say when a ringtone, an alarm, an alert or music
+             * starts and stops. */
             pa_context_set_subscribe_callback(c, &PalmLegacyManager::paSubscribeCb, self);
             {
                 pa_operation *op = pa_context_subscribe(c, (pa_subscription_mask_t)
@@ -958,7 +959,7 @@ bool PalmLegacyManager::applyCallRouting(ECallMode mode, EPhoneRoute route)
     }
 
     RoutingRequest *req = new(std::nothrow) RoutingRequest{this, mode, route,
-                                                           mRingState.ringing(), 1};
+                                                           mRingState.speakerWanted(mRingerOn), 1};
     if (!req)
         return false;
 
@@ -1144,8 +1145,8 @@ void PalmLegacyManager::paSinkInfoCb(pa_context *c, const pa_sink_info *info, in
             pa_sink_port_info *wired = (req->route == ePhoneRoute_HeadsetMic)
                                      ? (wiredHeadset ? wiredHeadset : wiredHeadphone)
                                      : (wiredHeadphone ? wiredHeadphone : wiredHeadset);
-            /* Ringing with something in the jack: the loudspeaker too, where
-             * the card can do both at once. */
+            /* Ringing, or an alert, with something in the jack: the
+             * loudspeaker too, where the card can do both at once. */
             pa_sink_port_info *ring = (wired == wiredHeadset) ? ringHeadset : ringHeadphone;
             if (wired && ring && RingState::speakerToo(req->mode, req->ring))
                 wired = ring;
@@ -1393,10 +1394,12 @@ void PalmLegacyManager::paRingInputCb(pa_context *, const pa_sink_input_info *in
     /* module-palm-policy tags every stream with the virtual sink it was
      * opened on, and keeps the tag when it moves the stream on. */
     const char *mediaType = pa_proplist_gets(info->proplist, "media.type");
+    const bool wasRinging = self->mRingState.ringing();
     if (self->mRingState.streamSeen(info->index, mediaType, info->corked))
     {
-        PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
-            "Ringing %s", self->mRingState.ringing() ? "started" : "stopped");
+        if (self->mRingState.ringing() != wasRinging)
+            PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+                "Ringing %s", self->mRingState.ringing() ? "started" : "stopped");
         self->updateCallMode();
     }
 }
@@ -2148,7 +2151,7 @@ void PalmLegacyManager::updateCallMode()
      * what they see (the jack, a call starting with the speaker already on)
      * is not. */
     if (mCallMode == mAppliedCallMode && route == mAppliedRoute &&
-        mRingState.ringing() == mAppliedRing)
+        mRingState.speakerWanted(mRingerOn) == mAppliedRing)
     {
         PM_LOG_DEBUG("updateCallMode: mode %d / route %d unchanged, nothing to apply",
             (int) mCallMode, (int) route);
@@ -2160,7 +2163,7 @@ void PalmLegacyManager::updateCallMode()
     {
         mAppliedCallMode = mCallMode;
         mAppliedRoute = route;
-        mAppliedRing = mRingState.ringing();
+        mAppliedRing = mRingState.speakerWanted(mRingerOn);
     }
     else
     {
@@ -3523,6 +3526,7 @@ bool PalmLegacyManager::_setRingerSwitch(LSHandle *sh, LSMessage *message, void 
     LegacyCategory *ringtone = categoryByName("/ringtone");
     if (self)
     {
+        const bool speakerWas = self->mRingState.speakerWanted(self->mRingerOn);
         self->mRingerOn = ringerOn;
         /* A silenced ringer switch means the ringtone stream is muted -- that
          * is the audible half com.palm.app.clock's read of /system/status
@@ -3535,6 +3539,10 @@ bool PalmLegacyManager::_setRingerSwitch(LSHandle *sh, LSMessage *message, void 
         /* With a USB headset, alerts ring on the loudspeaker too only with
          * the switch on. */
         self->syncUsbRing();
+        /* So do they with the jack: an alert playing as the switch moves
+         * goes onto the loudspeaker or comes off it. */
+        if (self->mRingState.speakerWanted(ringerOn) != speakerWas)
+            self->updateCallMode();
         self->notifyStatusSubscribers();
     }
 
