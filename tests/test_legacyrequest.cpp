@@ -120,6 +120,18 @@ TEST(LegacyRequest, PlayFeedbackNeedsAName)
     EXPECT_TRUE(ok("{\"name\":\"key\",\"play\":false,\"override\":true,\"type\":\"x\"}", PLAY_FEEDBACK));
 }
 
+// SCHEMA_n allowed $activity; so does each schema that replaced one.
+TEST(LegacyRequest, AnActivityIsAllowedWithEveryRequest)
+{
+    EXPECT_TRUE(ok("{\"offset\":1,\"$activity\":{}}", OFFSET_VOLUME));
+    EXPECT_TRUE(ok("{\"muted\":true,\"$activity\":{}}", SET_MUTED));
+    EXPECT_TRUE(ok("{\"ringtone\":true,\"$activity\":{}}", RINGER_SWITCH));
+    EXPECT_TRUE(ok("{\"scenario\":\"phone_headset\",\"$activity\":{}}", SCENARIO));
+    EXPECT_TRUE(ok("{\"lines\":[],\"$activity\":{}}", CALL_STATUS));
+    EXPECT_TRUE(ok("{\"id\":\"1\",\"$activity\":{}}", PLAY_DTMF));
+    EXPECT_TRUE(ok("{\"name\":\"key\",\"$activity\":{}}", PLAY_FEEDBACK));
+}
+
 TEST(LegacyRequest, ReadersGiveNoDefault)
 {
     const pbnjson::JValue empty = dom("{}");
