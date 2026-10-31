@@ -100,6 +100,18 @@ CallState::Transition CallState::transition(ECallMode from, ECallMode to)
     return t;
 }
 
+CallState::Resume CallState::resumeAfterCall(bool pausedForCall, bool onHeadsetLink)
+{
+    if (!pausedForCall)
+        return Resume::Never;
+    return onHeadsetLink ? Resume::Later : Resume::Now;
+}
+
+bool CallState::resumeStillDue(bool pausedForCall, ECallMode mode)
+{
+    return pausedForCall && mode == eCallMode_None;
+}
+
 CallState::Unplug CallState::unplugged(ECallMode mode, bool bluetoothAudio)
 {
     Unplug u{};
