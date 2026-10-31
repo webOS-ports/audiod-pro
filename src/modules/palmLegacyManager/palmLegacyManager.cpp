@@ -20,6 +20,7 @@
 #include <strings.h>
 
 #include "palmLegacyManager.h"
+#include "settingsRequest.h"
 #include "audioPolicyManager.h"
 #include "audioRouter.h"
 #include "main.h"
@@ -33,7 +34,6 @@
 #define SETTINGS_GET            "luna://com.webos.service.settings/getSystemSettings"
 #define SETTINGS_SET            "luna://com.webos.service.settings/setSystemSettings"
 #define SETTINGS_CATEGORY       "sound"
-#define SETTING_HEADSET_TAKES_CALL "bluetoothHeadsetTakesCall"
 #define KEY_ROOT_SETTINGS       "/getSettings"
 
 #define MEDIA_SESSIONS_URI      "luna://com.webos.service.mediacontroller/getActiveMediaSessions"
@@ -2391,18 +2391,26 @@ bool PalmLegacyManager::_getSettings(LSHandle *sh, LSMessage *message, void * /*
 bool PalmLegacyManager::_setSettings(LSHandle *sh, LSMessage *message, void * /*ctx*/)
 {
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
-    LSMessageJsonParser msg(message, SCHEMA_1(REQUIRED(bluetoothHeadsetTakesCall, boolean)));
+    LSMessageJsonParser msg(message, SettingsRequest::SET_SCHEMA);
     if (!msg.parse(__FUNCTION__, sh))
         return true;
 
-    bool takes = true;
-    msg.get(SETTING_HEADSET_TAKES_CALL, takes);
+    /* Refused, not a default applied: '{}' turned the setting off. */
+    const std::optional<bool> takes = SettingsRequest::headsetTakesCall(msg.get());
+    if (!takes)
+    {
+        CLSError lserror;
+        if (!LSMessageReply(sh, message, STANDARD_JSON_ERROR(AUDIOD_ERRORCODE_INVALID_PARAMS,
+                "bluetoothHeadsetTakesCall must be true or false"), &lserror))
+            lserror.Print(__FUNCTION__, __LINE__);
+        return true;
+    }
 
     if (self)
     {
         PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
-            "Setting %s: %d", SETTING_HEADSET_TAKES_CALL, (int) takes);
-        const bool changed = self->mHeadsetTakesCall.set(takes);
+            "Setting %s: %d", SETTING_HEADSET_TAKES_CALL, (int) *takes);
+        const bool changed = self->mHeadsetTakesCall.set(*takes);
         /* Stored also when unchanged: the stored value may still be the
          * default's absence, or older than what the user sees. */
         self->storeSettings();
