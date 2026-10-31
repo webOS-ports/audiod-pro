@@ -73,7 +73,9 @@ public:
     //! address's A2DP went. True when it went with PulseAudio and is to be
     //! connected again.
     bool a2dpGone(const std::string &address, std::uint64_t now);
-    //! address has A2DP again: nothing to do for it any more.
+    //! address has A2DP again: nothing to do for it any more. A report
+    //! for a headset whose A2DP has not gone yet changes nothing: its drop
+    //! still counts.
     void a2dpBack(const std::string &address);
 
     //! The headsets to connect now, as (address, adapter): none while

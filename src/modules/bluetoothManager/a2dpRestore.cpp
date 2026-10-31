@@ -55,7 +55,10 @@ bool A2dpRestore::a2dpGone(const std::string &address, std::uint64_t now)
 
 void A2dpRestore::a2dpBack(const std::string &address)
 {
-    mHadA2dp.erase(address);
+    /* A headset still on mHadA2dp has not lost A2DP yet (a2dpGone takes it
+     * off): this is bluetooth2 repeating that it is connected, as it did
+     * right after PulseAudio went on 2026-10-31 09:24:26. Its drop that
+     * follows is still PulseAudio's. */
     mCandidates.erase(address);
 }
 
