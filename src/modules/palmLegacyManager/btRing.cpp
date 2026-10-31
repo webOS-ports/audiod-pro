@@ -20,10 +20,12 @@
 
 const char *const BtRing::SPEAKER = "pcm_output";
 
-std::vector<int> BtRing::classes(ECallMode mode)
+std::vector<int> BtRing::classes(ECallMode mode, bool alertsOnSpeaker)
 {
     if (mode != eCallMode_None)
         return {};
+    if (alertsOnSpeaker)
+        return {ealerts, eringtones};
     return {eringtones};
 }
 
@@ -37,7 +39,7 @@ ClassRoute::Override BtRing::classOverride(ECallMode mode) const
     ClassRoute::Override o;
     if (mOutput.empty())
         return o;
-    o.classes = classes(mode);
+    o.classes = classes(mode, mAlertsOnSpeaker);
     if (o.classes.empty())
         return o;
     o.whileOutput = mOutput;

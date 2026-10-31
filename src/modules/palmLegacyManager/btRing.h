@@ -43,7 +43,11 @@
  * there on the loudspeaker, kept apart from PulseAudio so it can be tested.
  * module-palm-policy routes palarm as its ringtones class, so the alarm
  * clock rings on the loudspeaker as well, as on legacy. The alerts and
- * notifications stay in the headset: D1 is about the ringtone.
+ * notifications stay in the headset, as on Android: D1 is about the
+ * ringtone. Bluetooth Settings' "Alerts on phone speaker" (stored as
+ * sound/bluetoothAlertsOnSpeaker, off by default) keeps them on the
+ * loudspeaker too, the way legacy did: the alerts class, which
+ * module-palm-policy plays palerts, pnotifications and pcalendar in.
  */
 class BtRing
 {
@@ -52,15 +56,19 @@ public:
     static const char *const SPEAKER;
 
     /* The stream classes (module-palm-policy EVirtualSink numbers) that
-     * stay on the loudspeaker outside a call: the ringtones (with palarm).
-     * In a call, none: a ring then is call waiting, which belongs with the
-     * call, in the ear. */
-    static std::vector<int> classes(ECallMode mode);
+     * stay on the loudspeaker outside a call: the ringtones (with palarm),
+     * and with alertsOnSpeaker the alerts as well. In a call, none: a ring
+     * or an alert then belongs with the call, in the ear. */
+    static std::vector<int> classes(ECallMode mode, bool alertsOnSpeaker = false);
 
     //! The output the audio goes to now; only a Bluetooth sink is kept.
     void outputIs(const std::string &sink);
     //! The Bluetooth sink carrying the audio, "" for none.
     const std::string &output() const { return mOutput; }
+
+    //! Whether the alerts stay on the loudspeaker too (off: in the headset).
+    void setAlertsOnSpeaker(bool on) { mAlertsOnSpeaker = on; }
+    bool alertsOnSpeaker() const { return mAlertsOnSpeaker; }
 
     //! The router override for now: inactive without a Bluetooth output
     //! or in a call.
@@ -68,6 +76,7 @@ public:
 
 private:
     std::string mOutput;
+    bool mAlertsOnSpeaker = false;
 };
 
 #endif
