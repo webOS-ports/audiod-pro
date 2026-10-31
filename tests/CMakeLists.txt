@@ -31,7 +31,8 @@
 # (settingsRequest), oFono's hands-free audio agent against a
 # private bus (hfpAgent), stream classes the router sends elsewhere than
 # the rest while an output is in use (classRoute), and the sink a USB
-# headset rings on together with the loudspeaker (usbRing).
+# headset rings on together with the loudspeaker (usbRing), and the ringtones
+# staying on the loudspeaker with a Bluetooth headset (btRing).
 
 find_package(GTest REQUIRED)
 find_package(PkgConfig REQUIRED)
@@ -52,6 +53,7 @@ add_executable(audiod-tests
     ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/btCall.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/hfpAgent.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/usbRing.cpp
+    ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/btRing.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/audioRouter/classRoute.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/settingsRequest.cpp
     test_btstate.cpp
@@ -71,6 +73,7 @@ add_executable(audiod-tests
     test_hfpagent.cpp
     test_classroute.cpp
     test_usbring.cpp
+    test_btring.cpp
     test_headsettakescall.cpp
     test_settingsrequest.cpp)
 target_include_directories(audiod-tests PRIVATE
