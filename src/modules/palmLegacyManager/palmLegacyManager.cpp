@@ -1531,7 +1531,10 @@ void PalmLegacyManager::syncUsbRing()
         override.classes = UsbRing::classes(mCallMode, mRingerOn);
     }
     else
+    {
+        mBtRing.setOnHeadsetLink(mBtCall.sco() == BtCall::Sco::Up);
         override = mBtRing.classOverride(mCallMode);
+    }
     AudioRouter *router = AudioRouter::getAudioRouterInstance();
     if (router)
         router->setClassOverride(override);
