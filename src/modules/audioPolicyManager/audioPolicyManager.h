@@ -29,6 +29,7 @@
 #include "volumePolicyInfoParser.h"
 #include "audioMixer.h"
 #include "duckPolicy.h"
+#include "callMediaMute.h"
 
 #define VOLUME_POLICY_CONFIG "audiod_sink_volume_policy_config.json"
 #define SOURCE_VOLUME_POLICY_CONFIG "audiod_source_volume_policy_config.json"
@@ -62,6 +63,11 @@ class AudioPolicyManager : public ModuleInterface
         void readDuckDepth(const pbnjson::JValue &config);
         static gboolean duckRampStep(gpointer data);
         int duckedVolume(EVirtualAudioSink audioSink, int volume);
+        /* A call is up: the media classes are muted on top of the user's
+         * mute (callMediaMute.h). Every mute sent to the mixer goes through
+         * muteSink(), which adds it. */
+        bool mCallMediaMuted;
+        bool callMutes(EVirtualAudioSink audioSink);
         static bool mIsObjRegistered;
         AudioPolicyManager(ModuleConfig* const pConfObj);
         //Register Object to object factory. This is called automatically
@@ -201,6 +207,11 @@ class AudioPolicyManager : public ModuleInterface
         //! samples so the music is down when it starts (duckPolicy.h).
         unsigned duckLeadInMs(const std::string &streamType) const;
         bool getStreamMute(const std::string& streamType);
+        //! A call is (no longer) up: mute the media classes, or give them
+        //! back the user's mute (callMediaMute.h). The class's streams are
+        //! told at once, whether or not the policy thinks it is playing.
+        void setCallMediaMute(bool callUp);
+        bool callMediaMuted() const { return mCallMediaMuted; }
 
         //Luna API callbacks for pulseaudio calls
         static bool _setInputVolumeCallBackPA(LSHandle *sh, LSMessage *reply, void *ctx, bool status);

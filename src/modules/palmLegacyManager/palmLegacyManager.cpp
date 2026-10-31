@@ -26,6 +26,7 @@
 #include "settingsRequest.h"
 #include "legacyRequest.h"
 #include "audioPolicyManager.h"
+#include "callMediaMute.h"
 #include "audioRouter.h"
 #include "main.h"
 
@@ -1384,7 +1385,7 @@ void PalmLegacyManager::paJackSinkCb(pa_context *c, const pa_sink_info *info, in
     self->setJackState(state);
 }
 
-void PalmLegacyManager::paRingInputCb(pa_context *, const pa_sink_input_info *info, int eol,
+void PalmLegacyManager::paRingInputCb(pa_context *c, const pa_sink_input_info *info, int eol,
                                       void *userdata)
 {
     PalmLegacyManager *self = static_cast<PalmLegacyManager*>(userdata);
@@ -1394,6 +1395,24 @@ void PalmLegacyManager::paRingInputCb(pa_context *, const pa_sink_input_info *in
     /* module-palm-policy tags every stream with the virtual sink it was
      * opened on, and keeps the tag when it moves the stream on. */
     const char *mediaType = pa_proplist_gets(info->proplist, "media.type");
+
+    /* A media stream that appears during a call is muted here, as soon as
+     * it exists: module-palm-policy tells audiod of a stream only once it is
+     * uncorked, and GStreamer's pulsesink opens its streams corked and
+     * uncorks them when it starts playing, so the policy's mute would come
+     * after the first samples. Anything that unmutes one during the call
+     * is undone here as well. Never an unmute: the call's end gives every
+     * class back its user's mute through module-palm-policy. */
+    const AudioPolicyManager *policy = AudioPolicyManager::getAudioPolicyManagerInstance();
+    if (CallMediaMute::muteNow(policy && policy->callMediaMuted(), mediaType, info->mute))
+    {
+        PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+            "Muting %s stream %u for the call", mediaType, info->index);
+        pa_operation *op = pa_context_set_sink_input_mute(c, info->index, 1, nullptr, nullptr);
+        if (op)
+            pa_operation_unref(op);
+    }
+
     const bool wasRinging = self->mRingState.ringing();
     if (self->mRingState.streamSeen(info->index, mediaType, info->corked))
     {
@@ -2236,8 +2255,25 @@ void PalmLegacyManager::applyCallStatus()
      * closes when the last call ends. */
     const bool onHeadsetLink = (mBtCall.sco() != BtCall::Sco::Down);
 
+    /* While a call is up the media classes are muted (callMediaMute.h):
+     * the pause below reaches a player late, or never one without a media
+     * session. Muted before the routing, so nothing plays into the switch
+     * to the call. Only a call in progress, as with the pause: a phone
+     * ringing unanswered is not one yet (the Phone app reports a call from
+     * dialing or answering on). */
+    AudioPolicyManager *policy = AudioPolicyManager::getAudioPolicyManagerInstance();
+    const bool callUp = (mCallMode != eCallMode_None);
+    if (policy && callUp)
+        policy->setCallMediaMute(true);
+
     /* Deliberately called on the disconnect path too -- see updateCallMode(). */
     updateCallMode();
+
+    /* Unmuted after the routing, so what plays on comes out of whatever the
+     * call ended on, and before the resume, so the music is not silent when
+     * it starts again. */
+    if (policy && !callUp)
+        policy->setCallMediaMute(false);
 
     /* Media gives way to the call and comes back after it, the way it does
      * on any phone. After the routing, so the music resumes out of whatever
