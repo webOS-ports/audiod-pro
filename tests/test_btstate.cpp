@@ -102,4 +102,22 @@ TEST(BtState, AReportOnlySpeaksForItsOwnAdapter)
     EXPECT_EQ(state.gone(kAdapter, {kHeadset}), std::vector<std::string>{});
 }
 
+// PulseAudio restarting took the headsets' sinks with it: every headset
+// still connected is loaded again, each once, on the adapter it is on.
+TEST(BtState, EveryConnectedDeviceIsThereToLoadAgain)
+{
+    BtState state;
+    EXPECT_TRUE(state.connectedDevices().empty());
+    state.connect(kHeadset, kAdapter);
+    state.connect(kSpeaker, kOther);
+    state.connect(kHeadset, kAdapter);
+    using Devices = std::vector<std::pair<std::string, std::string>>;
+    EXPECT_EQ(state.connectedDevices(), (Devices{{kHeadset, kAdapter}, {kSpeaker, kOther}}));
+    state.disconnect(kHeadset);
+    EXPECT_EQ(state.connectedDevices(), (Devices{{kSpeaker, kOther}}));
+    // bluetooth2 going does not drop a link, so it does not end a replay
+    state.serviceDown();
+    EXPECT_EQ(state.connectedDevices(), (Devices{{kSpeaker, kOther}}));
+}
+
 } // namespace

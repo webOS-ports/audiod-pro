@@ -132,6 +132,7 @@ SET (modules_files
         src/modules/lunaEventSubscriber/lunaEventSubscriber.cpp
         src/modules/masterVolumeManager/OSEMasterVolumeManager.cpp
         src/modules/masterVolumeManager/volumeTarget.cpp
+        src/modules/masterVolumeManager/pulseReplay.cpp
         src/modules/deviceManager/udevDeviceManager.cpp
         src/modules/audioPolicyManager/audioPolicyManager.cpp
         src/modules/audioPolicyManager/duckPolicy.cpp
