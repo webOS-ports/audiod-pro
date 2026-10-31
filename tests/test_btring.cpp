@@ -317,3 +317,95 @@ TEST(BtRing, TheLastHeadsetIsTheNewestBluetoothOutput)
 }
 
 }
+
+namespace {
+
+// Every class of the whole range, where the router sends it.
+std::vector<std::string> everyClassTo(const BtRing &r, ECallMode mode, const std::string &output)
+{
+    std::vector<std::string> to(eVirtualSink_Last + 1);
+    for (const auto &run : ClassRoute::split(eVirtualSink_First, eVirtualSink_Last, output,
+                                             r.classOverride(mode)))
+        for (int c = run.start; c <= run.end && c <= eVirtualSink_Last; c++)
+            to[c] = run.sink;
+    return to;
+}
+
+void expectAllOn(const std::vector<std::string> &to, const std::string &sink)
+{
+    for (int c = eVirtualSink_First; c <= eVirtualSink_Last; c++)
+        EXPECT_EQ(to[c], sink) << c;
+}
+
+}
+
+// On a headset's SCO link, a call takes every class off its A2DP sink:
+// the headset's A2DP stream starting and stopping broke the call's own
+// stream (2026-10-31 09:31:12, 09:31:28).
+TEST(BtRingOnHeadsetLink, AVoipCallSendsNothingToA2dp)
+{
+    BtRing r;
+    r.outputIs(BT);
+    r.setOnHeadsetLink(true);
+    EXPECT_TRUE(r.onHeadsetLink());
+    expectAllOn(everyClassTo(r, eCallMode_Voip, BT), "pcm_output");
+}
+
+TEST(BtRingOnHeadsetLink, ACarrierCallSendsNothingToA2dp)
+{
+    BtRing r;
+    r.outputIs(BT);
+    r.setOnHeadsetLink(true);
+    expectAllOn(everyClassTo(r, eCallMode_Carrier, BT), "pcm_output");
+    // off the link a carrier call still moves nothing
+    r.setOnHeadsetLink(false);
+    expectAllOn(everyClassTo(r, eCallMode_Carrier, BT), BT);
+}
+
+TEST(BtRingOnHeadsetLink, TheWholeRangeAndNothingElse)
+{
+    std::vector<int> all;
+    for (int c = eVirtualSink_First; c <= eVirtualSink_Last; c++)
+        all.push_back(c);
+    EXPECT_EQ(BtRing::classes(eCallMode_Voip, false, true), all);
+    EXPECT_EQ(BtRing::classes(eCallMode_Carrier, true, true), all);
+    // outside a call the link changes nothing
+    EXPECT_EQ(BtRing::classes(eCallMode_None, false, true), (std::vector<int>{eringtones}));
+    EXPECT_EQ(BtRing::classes(eCallMode_None, true, true), (std::vector<int>{ealerts, eringtones}));
+}
+
+// The Nuraphone on 2026-10-31 09:32:45: its SCO link came up in a WhatsApp
+// call, then its A2DP sink came back. Nothing goes to that sink while the
+// link is up; once it is down only the call's own classes stay off it,
+// and after the call only the ringtones.
+TEST(BtRingOnHeadsetLink, AHeadsetReconnectingMidCallGetsNothingUntilTheLinkIsDown)
+{
+    BtRing r;
+    r.outputIs(BT);
+    r.outputIs("pcm_output");               // the headset went (09:32:15)
+    r.setOnHeadsetLink(true);               // its SCO link is up (09:32:45.85)
+    expectAllOn(everyClassTo(r, eCallMode_Voip, BT), "pcm_output");
+    r.outputIs(BT);                         // its A2DP sink is back (09:32:46.70)
+    expectAllOn(everyClassTo(r, eCallMode_Voip, BT), "pcm_output");
+    r.setOnHeadsetLink(false);              // the link closed, the call goes on
+    const auto to = everyClassTo(r, eCallMode_Voip, BT);
+    for (int c = eVirtualSink_First; c <= eVirtualSink_Last; c++)
+    {
+        const bool call = (c == evoipcall || c == evoipcall1);
+        EXPECT_EQ(to[c], call ? "pcm_output" : BT) << c;
+    }
+    EXPECT_EQ(r.classOverride(eCallMode_None).classes, (std::vector<int>{eringtones}));
+}
+
+// A carrier call on the link holds for the headset that carried the audio
+// last as well, gone or not.
+TEST(BtRingOnHeadsetLink, ACarrierCallHoldsForTheLastHeadset)
+{
+    BtRing r;
+    r.outputIs(BT);
+    r.outputIs("");
+    r.setOnHeadsetLink(true);
+    const ClassRoute::Override o = r.classOverride(eCallMode_Carrier);
+    EXPECT_TRUE(o.active());
+    EXPECT_EQ(o.whileOutput, BT);
+}
