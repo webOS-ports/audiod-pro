@@ -19,6 +19,7 @@
 #ifndef _PALM_LEGACY_MANAGER_H_
 #define _PALM_LEGACY_MANAGER_H_
 
+#include <array>
 #include <list>
 #include <set>
 #include <string>
@@ -40,6 +41,8 @@
 #include "videoSpeaker.h"
 #include "btCall.h"
 #include "hfpAgent.h"
+#include "callVolume.h"
+#include "voiceVolumeStream.h"
 
 /*
  * palmLegacyManager -- serves the Palm-era com.palm.audio API on top of audiod.
@@ -232,6 +235,23 @@ class PalmLegacyManager : public ModuleInterface, private HfpAgent::Listener
         guint mStoreRingtoneTimer = 0;
         bool mStoreRingtoneVolume = false;
         bool mStoreRingtoneMuted = false;
+        /* The in-call volume, one for each route a call is heard on
+         * (callVolume.h), kept as sound/callVolumeEarpiece and the others;
+         * the volume keys move it during a call, through /phone. */
+        CallVolume mCallVolume;
+        /* The carrier call's handle on the HAL voice volume, while one is
+         * up, on mVoiceSink: the droid card's primary sink. */
+        VoiceVolumeStream mVoiceStream;
+        std::string mVoiceSink;
+        static CallVolume::Route callVolumeRouteOf(EPhoneRoute route);
+        CallVolume::Route callVolumeRoute() const;
+        void applyCallVolume();
+        void callVolumeChanged(CallVolume::Route route);
+        void storeCallVolume(CallVolume::Route route);
+        void writeCallVolume();
+        static gboolean storeCallVolumeCb(gpointer data);
+        guint mStoreCallVolumeTimer = 0;
+        std::array<bool, CallVolume::kRoutes> mStoreCallVolume{};
         void readStoredSettings();
         void storeSettings(const SettingsRequest::Change &change);
         void applySettings();
@@ -405,7 +425,8 @@ class PalmLegacyManager : public ModuleInterface, private HfpAgent::Listener
         static bool _masterVolumeStatusCb(LSHandle *sh, LSMessage *reply, void *ctx);
 
         pbnjson::JValue rootStatus() const;
-        pbnjson::JValue categoryStatus(const LegacyCategory *cat, const char *action) const;
+        pbnjson::JValue categoryStatus(const LegacyCategory *cat, const char *action,
+                                       bool volumeChanged = false) const;
 
         void notifyStatusSubscribers();
         void notifyCategory(const LegacyCategory *cat, const char *action);
