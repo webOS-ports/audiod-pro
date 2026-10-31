@@ -23,31 +23,59 @@ bool RingState::isRingType(const char *mediaType)
     return mediaType && (!strcmp(mediaType, "pringtones") || !strcmp(mediaType, "palarm"));
 }
 
+bool RingState::isAlertType(const char *mediaType)
+{
+    return mediaType && (!strcmp(mediaType, "palerts") || !strcmp(mediaType, "pnotifications") ||
+                         !strcmp(mediaType, "pcalendar"));
+}
+
+bool RingState::isMediaType(const char *mediaType)
+{
+    return mediaType && (!strcmp(mediaType, "pmedia") || !strcmp(mediaType, "pdefaultapp"));
+}
+
 bool RingState::streamSeen(uint32_t index, const char *mediaType, bool corked)
 {
-    const bool was = ringing();
+    const unsigned was = snapshot();
 
-    if (isRingType(mediaType) && !corked)
-        mRinging.insert(index);
-    else
-        mRinging.erase(index);
+    mRinging.erase(index);
+    mAlerting.erase(index);
+    mMedia.erase(index);
+    if (!corked)
+    {
+        if (isRingType(mediaType))
+            mRinging.insert(index);
+        else if (isAlertType(mediaType))
+            mAlerting.insert(index);
+        else if (isMediaType(mediaType))
+            mMedia.insert(index);
+    }
 
-    return ringing() != was;
+    return snapshot() != was;
 }
 
 bool RingState::streamGone(uint32_t index)
 {
-    const bool was = ringing();
+    const unsigned was = snapshot();
     mRinging.erase(index);
-    return ringing() != was;
+    mAlerting.erase(index);
+    mMedia.erase(index);
+    return snapshot() != was;
 }
 
 void RingState::clear()
 {
     mRinging.clear();
+    mAlerting.clear();
+    mMedia.clear();
 }
 
-bool RingState::speakerToo(ECallMode mode, bool ringing)
+bool RingState::speakerWanted(bool ringerOn) const
 {
-    return ringing && mode == eCallMode_None;
+    return ringing() || (ringerOn && alerting() && !mediaPlaying());
+}
+
+bool RingState::speakerToo(ECallMode mode, bool wanted)
+{
+    return wanted && mode == eCallMode_None;
 }
