@@ -48,6 +48,18 @@
  * sound/bluetoothAlertsOnSpeaker, off by default) keeps them on the
  * loudspeaker too, the way legacy did: the alerts class, which
  * module-palm-policy plays palerts, pnotifications and pcalendar in.
+ *
+ * The same override keeps a VoIP call's own sound off the headset's A2DP
+ * sink. On a Halium phone a call reaches a hands-free headset through the
+ * audio HAL (pcm_output with the droid card on its BT SCO port), never
+ * through A2DP, so the voipcall classes stay on pcm_output for the whole
+ * VoIP call, whatever its route: the earpiece, the loudspeaker, or the
+ * headset over SCO. Without it the router sent them to A2DP with the rest:
+ * on SCO the connector's stream broke every few seconds (43 "Broken pipe"
+ * recoveries in 75 s, 2026-10-31 07:38:36-07:39:50), and with "Headset
+ * takes calls" off, a headset connecting mid-call took the call over A2DP
+ * while audiod and the Phone app said earpiece (D2-7, 07:40:09). Legacy's
+ * Media_A2DP scenario never sent its phone sinks to A2DP either.
  */
 class BtRing
 {
@@ -56,9 +68,12 @@ public:
     static const char *const SPEAKER;
 
     /* The stream classes (module-palm-policy EVirtualSink numbers) that
-     * stay on the loudspeaker outside a call: the ringtones (with palarm),
-     * and with alertsOnSpeaker the alerts as well. In a call, none: a ring
-     * or an alert then belongs with the call, in the ear. */
+     * stay on pcm_output instead of the headset's A2DP sink. Outside a
+     * call: the ringtones (with palarm), and with alertsOnSpeaker the
+     * alerts as well. In a VoIP call: the call's own, voipcall and
+     * voipcall1 (both in display 1's range); a ring or an alert then
+     * belongs with the call. In a carrier call: none, its sound goes
+     * through the modem, not a stream. */
     static std::vector<int> classes(ECallMode mode, bool alertsOnSpeaker = false);
 
     //! The output the audio goes to now; only a Bluetooth sink is kept.
@@ -70,13 +85,22 @@ public:
     void setAlertsOnSpeaker(bool on) { mAlertsOnSpeaker = on; }
     bool alertsOnSpeaker() const { return mAlertsOnSpeaker; }
 
-    //! The router override for now: inactive without a Bluetooth output
-    //! or in a call.
+    //! The Bluetooth sink that carried the audio last, kept after it went:
+    //! "" until one has.
+    const std::string &lastOutput() const { return mLast; }
+
+    //! The router override for now: inactive in a carrier call, and
+    //! outside a call without a Bluetooth output. In a VoIP call it holds
+    //! for the headset that carried the audio last, gone or not: when that
+    //! headset comes back mid-call the router sends the classes past it
+    //! from the start, instead of to its A2DP sink until this module hears
+    //! of the new output a moment later.
     ClassRoute::Override classOverride(ECallMode mode) const;
 
 private:
     std::string mOutput;
     bool mAlertsOnSpeaker = false;
+    std::string mLast;
 };
 
 #endif

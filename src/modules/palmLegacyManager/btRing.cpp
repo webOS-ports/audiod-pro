@@ -22,6 +22,8 @@ const char *const BtRing::SPEAKER = "pcm_output";
 
 std::vector<int> BtRing::classes(ECallMode mode, bool alertsOnSpeaker)
 {
+    if (mode == eCallMode_Voip)
+        return {evoipcall, evoipcall1};
     if (mode != eCallMode_None)
         return {};
     if (alertsOnSpeaker)
@@ -32,17 +34,20 @@ std::vector<int> BtRing::classes(ECallMode mode, bool alertsOnSpeaker)
 void BtRing::outputIs(const std::string &sink)
 {
     mOutput = CallState::isBluetoothOutput(sink) ? sink : std::string();
+    if (!mOutput.empty())
+        mLast = mOutput;
 }
 
 ClassRoute::Override BtRing::classOverride(ECallMode mode) const
 {
     ClassRoute::Override o;
-    if (mOutput.empty())
+    const std::string &headset = (mode == eCallMode_Voip) ? mLast : mOutput;
+    if (headset.empty())
         return o;
     o.classes = classes(mode, mAlertsOnSpeaker);
     if (o.classes.empty())
         return o;
-    o.whileOutput = mOutput;
+    o.whileOutput = headset;
     o.target = SPEAKER;
     return o;
 }
