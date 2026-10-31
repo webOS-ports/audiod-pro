@@ -149,6 +149,7 @@ SET (modules_files
         src/modules/audioPolicyManager/volumePolicyInfoParser.cpp
         src/modules/bluetoothManager/bluetoothManager.cpp
         src/modules/bluetoothManager/btState.cpp
+        src/modules/bluetoothManager/a2dpRestore.cpp
         src/modules/connectionManager/connectionManager.cpp
         src/modules/masterVolumeManager/masterVolumeManager.cpp
         src/modules/settingsServiceManager/settingsServiceManager.cpp

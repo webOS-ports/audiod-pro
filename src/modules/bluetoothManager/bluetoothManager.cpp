@@ -166,6 +166,7 @@ void BluetoothManager::setBlueToothA2DPActive(bool state, const std::string &add
 
     if (state)
     {
+        mA2dpRestore.a2dpBack(address);
         if (!mBtState.connect(address, adapterAddress))
         {
             PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
@@ -197,6 +198,13 @@ void BluetoothManager::setBlueToothA2DPActive(bool state, const std::string &add
     {
         if (!mBtState.disconnect(address))
             return;
+        if (mA2dpRestore.a2dpGone(address, static_cast<std::uint64_t>(g_get_monotonic_time() / 1000)))
+        {
+            PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
+                "%s: A2DP of %s went with PulseAudio; connecting it again once PulseAudio is back",
+                __FUNCTION__, address.c_str());
+            scheduleA2dpRestore();
+        }
         auto mapIter = mDisplayConnectionStatus.find(display);
         if (mapIter != mDisplayConnectionStatus.end())
             mapIter->second = false;
@@ -565,7 +573,19 @@ BluetoothManager::BluetoothManager(ModuleConfig* const pConfObj):
 
 void BluetoothManager::eventMixerStatus(bool mixerStatus, utils::EMIXER_TYPE mixerType)
 {
-    if (utils::ePulseMixer != mixerType || !mixerStatus || !mObjAudioMixer)
+    if (utils::ePulseMixer != mixerType)
+        return;
+    if (!mixerStatus)
+    {
+        /* PulseAudio's A2DP endpoints went with it, and BlueZ takes the
+         * headsets' A2DP down when they do: see a2dpRestore.h. */
+        mA2dpRestore.pulseGone(mBtState.connectedDevices(),
+                               static_cast<std::uint64_t>(g_get_monotonic_time() / 1000));
+        return;
+    }
+    if (mA2dpRestore.pulseBack())
+        scheduleA2dpRestore();
+    if (!mObjAudioMixer)
         return;
     /* PulseAudio is (back) up. One that restarted lost the Bluetooth module
      * audiod had it load, and the headsets' sinks with it; one that came up
@@ -580,8 +600,77 @@ void BluetoothManager::eventMixerStatus(bool mixerStatus, utils::EMIXER_TYPE mix
     }
 }
 
+void BluetoothManager::scheduleA2dpRestore()
+{
+    if (mA2dpRestoreTimer || !mA2dpRestore.pulseUp() || !mA2dpRestore.pending())
+        return;
+    mA2dpRestoreTimer = g_timeout_add_seconds(A2DP_RESTORE_DELAY_SECONDS,
+                                              &BluetoothManager::a2dpRestoreTimedOut, this);
+}
+
+gboolean BluetoothManager::a2dpRestoreTimedOut(gpointer data)
+{
+    BluetoothManager *self = static_cast<BluetoothManager*>(data);
+    self->mA2dpRestoreTimer = 0;
+    for (const auto &device : self->mA2dpRestore.due())
+    {
+        pbnjson::JValue payload = pbnjson::Object();
+        payload.put("address", device.first);
+        if (!device.second.empty())
+            payload.put("adapterAddress", device.second);
+        PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
+            "%s: connecting A2DP of %s again: %s", __FUNCTION__, device.first.c_str(),
+            payload.stringify().c_str());
+        std::string *address = new std::string(device.first);
+        CLSError lserror;
+        if (!LSCallOneReply(GetPalmService(), BT_A2DP_CONNECT, payload.stringify().c_str(),
+                            &BluetoothManager::a2dpConnectReply, address, nullptr, &lserror))
+        {
+            lserror.Print(__FUNCTION__, __LINE__);
+            delete address;
+            self->mA2dpRestore.failed(device.first);
+        }
+    }
+    self->scheduleA2dpRestore();
+    return G_SOURCE_REMOVE;
+}
+
+bool BluetoothManager::a2dpConnectReply(LSHandle *sh, LSMessage *reply, void *ctx)
+{
+    (void)sh;
+    std::string *address = static_cast<std::string*>(ctx);
+    BluetoothManager *self = mBluetoothManager;
+    /* The headset may have A2DP again by itself meanwhile: then nothing
+     * waits for this answer. */
+    if (self && address && self->mA2dpRestore.wanted(*address))
+    {
+        pbnjson::JValue answer = btReply(reply, __FUNCTION__);
+        /* 128 "Device is already connecting" may still fail, so it is
+         * waited for and tried again; 131 "Already connected" is what was
+         * wanted. */
+        const int errorCode = answer["errorCode"].isNumber() ? answer["errorCode"].asNumber<int>() : 0;
+        if (btBool(answer, "returnValue") || errorCode == 131)
+            self->mA2dpRestore.done(*address);
+        else if (self->mA2dpRestore.failed(*address))
+        {
+            PM_LOG_WARNING(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
+                "%s: connecting A2DP of %s failed (%d), trying again", __FUNCTION__,
+                address->c_str(), errorCode);
+            self->scheduleA2dpRestore();
+        }
+        else
+            PM_LOG_WARNING(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
+                "%s: connecting A2DP of %s failed (%d), giving up", __FUNCTION__,
+                address->c_str(), errorCode);
+    }
+    delete address;
+    return true;
+}
+
 BluetoothManager::~BluetoothManager()
 {
+    if (mA2dpRestoreTimer)
+        g_source_remove(mA2dpRestoreTimer);
     PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT, \
         "BT manager destructor");
 }
