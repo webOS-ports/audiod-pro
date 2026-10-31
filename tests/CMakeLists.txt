@@ -21,7 +21,8 @@
 # ringing (ringState), when to reconnect to PulseAudio (paReconnect),
 # when a video call goes on the loudspeaker (videoSpeaker),
 # which output a volume request moves (volumeTarget), when an alert lowers
-# the music (duckPolicy), what a WAV file's header says about the sound
+# the music (duckPolicy), which classes a call mutes (callMediaMute), what
+# a WAV file's header says about the sound
 # playSound plays (wavHeader), stopping on SIGTERM within a deadline
 # (shutdownGuard), which output the audio goes to (outputChoice), what is
 # sent to PulseAudio again after it restarted: the cards (cardTable) and
@@ -50,6 +51,7 @@ add_executable(audiod-tests
     ${CMAKE_SOURCE_DIR}/src/modules/masterVolumeManager/volumeTarget.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/masterVolumeManager/pulseReplay.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/audioPolicyManager/duckPolicy.cpp
+    ${CMAKE_SOURCE_DIR}/src/modules/audioPolicyManager/callMediaMute.cpp
     ${CMAKE_SOURCE_DIR}/src/wavHeader.cpp
     ${CMAKE_SOURCE_DIR}/src/shutdownGuard.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/audioRouter/outputChoice.cpp
@@ -68,6 +70,7 @@ add_executable(audiod-tests
     test_videospeaker.cpp
     test_volumetarget.cpp
     test_duckpolicy.cpp
+    test_callmediamute.cpp
     test_wavheader.cpp
     test_shutdownguard.cpp
     test_cardtable.cpp
