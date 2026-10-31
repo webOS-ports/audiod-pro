@@ -217,6 +217,21 @@ class PalmLegacyManager : public ModuleInterface, private HfpAgent::Listener
          * Settings' "Alerts on phone speaker", sound/bluetoothAlertsOnSpeaker,
          * off by default (see btRing.h). */
         StoredSetting<bool> mAlertsOnSpeaker;
+        /* com.palm.audio/ringtone's volume and mute, the volume of the
+         * pringtones stream, which the Phone app rings in: kept as
+         * sound/ringtoneVolume and sound/ringtoneMuted, so a restart does
+         * not ring at the policy's 100 again. */
+        StoredSetting<int> mRingtoneVolume;
+        StoredSetting<bool> mRingtoneMuted;
+        void applyRingtoneVolume();
+        /* The slider sends a volume for every step it moves: what it ends
+         * on is stored, RINGTONE_STORE_DELAY_MS after the last one. */
+        void storeRingtoneVolume(bool volume, bool muted);
+        void writeRingtoneVolume();
+        static gboolean storeRingtoneVolumeCb(gpointer data);
+        guint mStoreRingtoneTimer = 0;
+        bool mStoreRingtoneVolume = false;
+        bool mStoreRingtoneMuted = false;
         void readStoredSettings();
         void storeSettings(const SettingsRequest::Change &change);
         void applySettings();
