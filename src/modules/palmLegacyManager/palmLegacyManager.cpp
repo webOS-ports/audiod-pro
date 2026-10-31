@@ -21,6 +21,7 @@
 
 #include "palmLegacyManager.h"
 #include "settingsRequest.h"
+#include "legacyRequest.h"
 #include "audioPolicyManager.h"
 #include "audioRouter.h"
 #include "main.h"
@@ -131,6 +132,18 @@ void PalmLegacyManager::replySuccess(LSHandle *sh, LSMessage *message)
 {
     CLSError lserror;
     if (!LSMessageReply(sh, message, STANDARD_JSON_SUCCESS, &lserror))
+        lserror.Print(__FUNCTION__, __LINE__);
+}
+
+/* A payload that passed its schema but lacks what the method needs. */
+static void replyInvalid(LSHandle *sh, LSMessage *message, const char *errorText)
+{
+    pbnjson::JValue reply = pbnjson::Object();
+    reply.put("returnValue", false);
+    reply.put("errorCode", AUDIOD_ERRORCODE_INVALID_PARAMS);
+    reply.put("errorText", errorText);
+    CLSError lserror;
+    if (!LSMessageReply(sh, message, reply.stringify().c_str(), &lserror))
         lserror.Print(__FUNCTION__, __LINE__);
 }
 
@@ -2425,13 +2438,18 @@ bool PalmLegacyManager::_setSettings(LSHandle *sh, LSMessage *message, void * /*
 bool PalmLegacyManager::_rootSetVolume(LSHandle *sh, LSMessage *message, void *ctx)
 {
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
-    LSMessageJsonParser msg(message, SCHEMA_2(REQUIRED(volume, integer),
-                                              OPTIONAL(scenario, string)));
+    LSMessageJsonParser msg(message, LegacyRequest::SET_VOLUME);
     if (!msg.parse(__FUNCTION__, sh))
         return true;
 
-    int volume = 0;
-    msg.get("volume", volume);
+    /* Not 0 for a volume that is not there: '{}' silenced the output. */
+    const std::optional<int32_t> requested = LegacyRequest::integer(msg.get(), "volume");
+    if (!requested)
+    {
+        replyInvalid(sh, message, "volume must be an integer");
+        return true;
+    }
+    const int volume = *requested;
 
     if (volume < 0 || volume > 100)
     {
@@ -2648,13 +2666,18 @@ bool PalmLegacyManager::_setVolume(LSHandle *sh, LSMessage *message, void *ctx)
     /* scenario is optional in the Palm API and callers do send it; rejecting it
      * as an unknown property (SCHEMA_n sets additionalProperties:false) is what
      * made per-scenario volume sets fail outright. */
-    LSMessageJsonParser msg(message, SCHEMA_2(REQUIRED(volume, integer),
-                                              OPTIONAL(scenario, string)));
+    LSMessageJsonParser msg(message, LegacyRequest::SET_VOLUME);
     if (!msg.parse(__FUNCTION__, sh))
         return true;
 
-    int volume = 0;
-    msg.get("volume", volume);
+    /* Not 0 for a volume that is not there: '{}' silenced the output. */
+    const std::optional<int32_t> requested = LegacyRequest::integer(msg.get(), "volume");
+    if (!requested)
+    {
+        replyInvalid(sh, message, "volume must be an integer");
+        return true;
+    }
+    const int volume = *requested;
 
     CLSError lserror;
     if (volume < 0 || volume > 100)
@@ -2702,14 +2725,17 @@ bool PalmLegacyManager::_offsetVolume(LSHandle *sh, LSMessage *message, void *ct
 {
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
     LegacyCategory *cat = categoryFor(message);
-    LSMessageJsonParser msg(message, SCHEMA_3(REQUIRED(offset, integer),
-                                              OPTIONAL(scenario, string),
-                                              OPTIONAL(unit, string)));
+    LSMessageJsonParser msg(message, LegacyRequest::OFFSET_VOLUME);
     if (!msg.parse(__FUNCTION__, sh))
         return true;
 
-    int offset = 0;
-    msg.get("offset", offset);
+    const std::optional<int32_t> requested = LegacyRequest::integer(msg.get(), "offset");
+    if (!requested)
+    {
+        replyInvalid(sh, message, "offset must be an integer");
+        return true;
+    }
+    const int offset = *requested;
 
     AudioPolicyManager *policy = AudioPolicyManager::getAudioPolicyManagerInstance();
     CLSError lserror;
@@ -2742,12 +2768,18 @@ bool PalmLegacyManager::_setMuted(LSHandle *sh, LSMessage *message, void *ctx)
 {
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
     LegacyCategory *cat = categoryFor(message);
-    LSMessageJsonParser msg(message, SCHEMA_1(REQUIRED(muted, boolean)));
+    LSMessageJsonParser msg(message, LegacyRequest::SET_MUTED);
     if (!msg.parse(__FUNCTION__, sh))
         return true;
 
-    bool muted = false;
-    msg.get("muted", muted);
+    /* Not false for a muted that is not there: '{}' unmuted the category. */
+    const std::optional<bool> requested = LegacyRequest::boolean(msg.get(), "muted");
+    if (!requested)
+    {
+        replyInvalid(sh, message, "muted must be true or false");
+        return true;
+    }
+    const bool muted = *requested;
 
     AudioPolicyManager *policy = AudioPolicyManager::getAudioPolicyManagerInstance();
     if (self && cat && cat->streamType && policy)
@@ -2932,12 +2964,19 @@ bool PalmLegacyManager::_vvmControl(LSHandle *sh, LSMessage *message, void *ctx)
 bool PalmLegacyManager::_phoneSetMuted(LSHandle *sh, LSMessage *message, void *ctx)
 {
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
-    LSMessageJsonParser msg(message, SCHEMA_1(REQUIRED(muted, boolean)));
+    LSMessageJsonParser msg(message, LegacyRequest::SET_MUTED);
     if (!msg.parse(__FUNCTION__, sh))
         return true;
 
-    bool muted = false;
-    msg.get("muted", muted);
+    /* Not false for a muted that is not there: '{}' opened the microphone
+     * of a muted call. */
+    const std::optional<bool> requested = LegacyRequest::boolean(msg.get(), "muted");
+    if (!requested)
+    {
+        replyInvalid(sh, message, "muted must be true or false");
+        return true;
+    }
+    const bool muted = *requested;
 
     if (self)
     {
@@ -3278,12 +3317,18 @@ bool PalmLegacyManager::_stopDTMF(LSHandle *sh, LSMessage *message, void *ctx)
 bool PalmLegacyManager::_setRingerSwitch(LSHandle *sh, LSMessage *message, void *ctx)
 {
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
-    LSMessageJsonParser msg(message, SCHEMA_1(REQUIRED(ringtone, boolean)));
+    LSMessageJsonParser msg(message, LegacyRequest::RINGER_SWITCH);
     if (!msg.parse(__FUNCTION__, sh))
         return true;
 
-    bool ringerOn = true;
-    msg.get("ringtone", ringerOn);
+    /* Not false for a ringtone that is not there: '{}' silenced the ringer. */
+    const std::optional<bool> requested = LegacyRequest::boolean(msg.get(), "ringtone");
+    if (!requested)
+    {
+        replyInvalid(sh, message, "ringtone must be true or false");
+        return true;
+    }
+    const bool ringerOn = *requested;
 
     AudioPolicyManager *policy = AudioPolicyManager::getAudioPolicyManagerInstance();
     LegacyCategory *ringtone = categoryByName("/ringtone");

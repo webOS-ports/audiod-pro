@@ -138,6 +138,7 @@ SET (modules_files
         src/modules/palmLegacyManager/hfpAgent.cpp
         src/modules/palmLegacyManager/usbRing.cpp
         src/modules/palmLegacyManager/settingsRequest.cpp
+        src/modules/palmLegacyManager/legacyRequest.cpp
         src/modules/lunaEventSubscriber/lunaEventSubscriber.cpp
         src/modules/masterVolumeManager/OSEMasterVolumeManager.cpp
         src/modules/masterVolumeManager/volumeTarget.cpp
