@@ -102,6 +102,8 @@ PalmLegacyManager::PalmLegacyManager(ModuleConfig* const pConfObj) :
     mHfpAgent(nullptr),
     mHeadsetTakesCall(true),
     mAlertsOnSpeaker(false),
+    mRingtoneVolume(100),   // the policy config's currentVolume for pringtones
+    mRingtoneMuted(false),
     mResumeMediaAfterCall(false),
     mMediaGeneration(0),
     mResumeMediaTimer(0),
@@ -565,6 +567,13 @@ void PalmLegacyManager::deInitialize()
     mPortsHandle = nullptr;
 
     cancelResumeMedia();
+    /* A ringtone volume not stored yet is stored now. */
+    if (mStoreRingtoneTimer)
+    {
+        g_source_remove(mStoreRingtoneTimer);
+        mStoreRingtoneTimer = 0;
+        writeRingtoneVolume();
+    }
     if (mPaReconnectTimer)
     {
         g_source_remove(mPaReconnectTimer);
@@ -1531,7 +1540,10 @@ void PalmLegacyManager::syncUsbRing()
         override.classes = UsbRing::classes(mCallMode, mRingerOn);
     }
     else
+    {
+        mBtRing.setOnHeadsetLink(mBtCall.sco() == BtCall::Sco::Up);
         override = mBtRing.classOverride(mCallMode);
+    }
     AudioRouter *router = AudioRouter::getAudioRouterInstance();
     if (router)
         router->setClassOverride(override);
@@ -2392,6 +2404,8 @@ void PalmLegacyManager::readStoredSettings()
     pbnjson::JValue keys = pbnjson::Array();
     keys.append(SETTING_HEADSET_TAKES_CALL);
     keys.append(SETTING_ALERTS_ON_SPEAKER);
+    keys.append(SETTING_RINGTONE_VOLUME);
+    keys.append(SETTING_RINGTONE_MUTED);
     pbnjson::JValue payload = pbnjson::Object();
     payload.put("category", SETTINGS_CATEGORY);
     payload.put("keys", keys);
@@ -2432,7 +2446,84 @@ bool PalmLegacyManager::_storedSettingsCb(LSHandle *, LSMessage *reply, void *ct
     }
     if (changed)
         self->applySettings();
+
+    bool ringtoneChanged = false;
+    if (const std::optional<int> volume = SettingsRequest::storedVolume(settings[SETTING_RINGTONE_VOLUME]))
+    {
+        PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+            "Stored setting %s: %d", SETTING_RINGTONE_VOLUME, *volume);
+        ringtoneChanged = self->mRingtoneVolume.stored(*volume) || ringtoneChanged;
+    }
+    if (const std::optional<bool> muted = SettingsRequest::storedFlag(settings[SETTING_RINGTONE_MUTED]))
+    {
+        PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+            "Stored setting %s: %d", SETTING_RINGTONE_MUTED, (int) *muted);
+        ringtoneChanged = self->mRingtoneMuted.stored(*muted) || ringtoneChanged;
+    }
+    if (ringtoneChanged)
+        self->applyRingtoneVolume();
     return true;
+}
+
+/* The stored ringtone volume and mute onto the pringtones stream, a ring
+ * already playing included (setStreamVolume reprograms its sink inputs). */
+void PalmLegacyManager::applyRingtoneVolume()
+{
+    LegacyCategory *ringtone = categoryByName("/ringtone");
+    AudioPolicyManager *policy = AudioPolicyManager::getAudioPolicyManagerInstance();
+    if (!ringtone || !ringtone->streamType || !policy)
+        return;
+    policy->setStreamVolume(ringtone->streamType, mRingtoneVolume.value());
+    policy->setStreamMute(ringtone->streamType, mRingtoneMuted.value());
+    notifyCategory(ringtone, "changed");
+}
+
+static constexpr guint RINGTONE_STORE_DELAY_MS = 1000;
+
+void PalmLegacyManager::storeRingtoneVolume(bool volume, bool muted)
+{
+    mStoreRingtoneVolume = mStoreRingtoneVolume || volume;
+    mStoreRingtoneMuted = mStoreRingtoneMuted || muted;
+    if (mStoreRingtoneTimer)
+        g_source_remove(mStoreRingtoneTimer);
+    mStoreRingtoneTimer = g_timeout_add(RINGTONE_STORE_DELAY_MS,
+                                        &PalmLegacyManager::storeRingtoneVolumeCb, this);
+}
+
+gboolean PalmLegacyManager::storeRingtoneVolumeCb(gpointer data)
+{
+    PalmLegacyManager *self = static_cast<PalmLegacyManager*>(data);
+    if (self)
+    {
+        self->mStoreRingtoneTimer = 0;
+        self->writeRingtoneVolume();
+    }
+    return G_SOURCE_REMOVE;
+}
+
+void PalmLegacyManager::writeRingtoneVolume()
+{
+    if (!mStoreRingtoneVolume && !mStoreRingtoneMuted)
+        return;
+    CLSError lserror;
+    LSHandle *sh = GetPalmService();
+    /* Only what changed: the other may not have been read back yet. */
+    pbnjson::JValue settings = pbnjson::Object();
+    if (mStoreRingtoneVolume)
+        settings.put(SETTING_RINGTONE_VOLUME, mRingtoneVolume.value());
+    if (mStoreRingtoneMuted)
+        settings.put(SETTING_RINGTONE_MUTED, mRingtoneMuted.value());
+    mStoreRingtoneVolume = false;
+    mStoreRingtoneMuted = false;
+    pbnjson::JValue payload = pbnjson::Object();
+    payload.put("category", SETTINGS_CATEGORY);
+    payload.put("settings", settings);
+    if (!sh || !LSCall(sh, SETTINGS_SET, payload.stringify().c_str(), nullptr, nullptr, nullptr, &lserror))
+    {
+        lserror.Print(__FUNCTION__, __LINE__);
+        PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+            "Could not store the ringtone volume; it lasts until audiod restarts");
+    }
 }
 
 void PalmLegacyManager::storeSettings(const SettingsRequest::Change &change)
@@ -2787,6 +2878,11 @@ bool PalmLegacyManager::_setVolume(LSHandle *sh, LSMessage *message, void *ctx)
         return true;
     }
 
+    if (cat == categoryByName("/ringtone"))
+    {
+        self->mRingtoneVolume.set(volume);
+        self->storeRingtoneVolume(true, false);
+    }
     self->notifyCategory(cat, "changed");
     replySuccess(sh, message);
     return true;
@@ -2842,6 +2938,11 @@ bool PalmLegacyManager::_offsetVolume(LSHandle *sh, LSMessage *message, void *ct
         volume = 100;
 
     policy->setStreamVolume(cat->streamType, volume);
+    if (cat == categoryByName("/ringtone"))
+    {
+        self->mRingtoneVolume.set(volume);
+        self->storeRingtoneVolume(true, false);
+    }
     self->notifyCategory(cat, "changed");
 
     pbnjson::JValue reply = pbnjson::Object();
@@ -2872,6 +2973,11 @@ bool PalmLegacyManager::_setMuted(LSHandle *sh, LSMessage *message, void *ctx)
     if (self && cat && cat->streamType && policy)
     {
         policy->setStreamMute(cat->streamType, muted);
+        if (cat == categoryByName("/ringtone"))
+        {
+            self->mRingtoneMuted.set(muted);
+            self->storeRingtoneVolume(false, true);
+        }
         self->notifyCategory(cat, "changed");
     }
 

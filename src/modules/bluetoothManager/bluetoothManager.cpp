@@ -166,13 +166,15 @@ void BluetoothManager::setBlueToothA2DPActive(bool state, const std::string &add
 
     if (state)
     {
-        mA2dpRestore.a2dpBack(address);
         if (!mBtState.connect(address, adapterAddress))
         {
+            /* bluetooth2 repeating itself: the headset did not come back,
+             * so a drop of it that is to be undone still is. */
             PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
                 "%s BT device is already in connected state",  __FUNCTION__);
             return;
         }
+        mA2dpRestore.a2dpBack(address);
         auto mapIter = mDisplayConnectionStatus.find(display);
         if (mapIter != mDisplayConnectionStatus.end())
             mapIter->second = true;
