@@ -109,6 +109,31 @@ public:
     //! Nothing, when Bluetooth carries the audio: the plug was not playing it.
     static Unplug unplugged(ECallMode mode, bool bluetoothAudio);
 
+    //! Whether name is an A2DP sink. PulseAudio 17 names them
+    //! bluez_sink.<addr>.<profile>; newer ones use bluez_output.
+    static bool isBluetoothOutput(const std::string &name);
+    //! Whether name is a USB headset's sink. module-palm-policy names them
+    //! after the routing config's usb_speaker entry: usb_speaker0, usb_speaker1.
+    static bool isUsbOutput(const std::string &name);
+
+    //! Whether what plays on sink stays private: a Bluetooth or USB
+    //! headset's sink, or the built-in output with headphones in
+    //! (jackPlugged: it plays into the plug). These are the outputs
+    //! audioRouter counts as removable (OutputChoice): of them the one
+    //! connected last has the audio, and when it goes the audio falls back
+    //! to the one connected before it - only with none left, to the
+    //! loudspeaker.
+    static bool privateOutput(const std::string &sink, bool jackPlugged);
+
+    //! What has to happen when the active output moves from one sink to
+    //! another: going from a headset (Bluetooth or USB) to an output that
+    //! is not private is an unplug, the same as pulling the jack. Going to
+    //! another headset or to the jack is not; the music stays private. The
+    //! one rule for both kinds of headset, and the jack's (unplugged() with
+    //! privateOutput() of what has the audio after it) is the same.
+    static Unplug outputMoved(ECallMode mode, const std::string &from,
+                              const std::string &to, bool jackPlugged);
+
 private:
     struct Calls
     {

@@ -19,6 +19,7 @@
 #ifndef _PALM_LEGACY_MANAGER_H_
 #define _PALM_LEGACY_MANAGER_H_
 
+#include <list>
 #include <set>
 #include <string>
 #include <vector>
@@ -31,8 +32,12 @@
 #include "moduleManager.h"
 #include "callState.h"
 #include "ringState.h"
+#include "usbRing.h"
+#include "storedSetting.h"
 #include "paReconnect.h"
 #include "videoSpeaker.h"
+#include "btCall.h"
+#include "hfpAgent.h"
 
 /*
  * palmLegacyManager -- serves the Palm-era com.palm.audio API on top of audiod.
@@ -72,7 +77,7 @@
  * the two legacy names need their own handles, registered here.
  */
 
-class PalmLegacyManager : public ModuleInterface
+class PalmLegacyManager : public ModuleInterface, private HfpAgent::Listener
 {
     public:
         /* Where audio should come out for a routable category. Named after the
@@ -174,6 +179,39 @@ class PalmLegacyManager : public ModuleInterface
         bool mJackSeenUnplugged;
         std::string mBtAudioSink;
         std::string mBtAudioName;
+        /* The USB headset's sink (usb_speaker0, ...) while it carries the
+         * audio, "" otherwise; followed through the active output as well. */
+        std::string mUsbAudioSink;
+        /* While a USB headset carries the audio, the ringtones and alerts go
+         * to a sink combining it with the loudspeaker: see usbRing.h. */
+        UsbRing mUsbRing;
+        /* Taking the combined sink down: what plays on it is moved to
+         * fallback, then its module is unloaded. A chain of callbacks on
+         * mPaContext; dropPaContext() frees what a dead context left. */
+        struct UsbRingDrop
+        {
+            PalmLegacyManager *self;
+            uint32_t module;
+            uint32_t sink;
+            std::string fallback;
+        };
+        std::list<UsbRingDrop> mUsbRingDrops;
+
+        /* Call audio on a hands-free headset: oFono is the gateway, mHfpAgent
+         * its audio agent holding the SCO link, mBtCall what is connected and
+         * whether the call belongs on the headset. */
+        BtCall mBtCall;
+        HfpAgent *mHfpAgent;
+        /* Whether a headset connecting during a call takes it: Bluetooth
+         * Settings' "Headset takes calls", kept in settingsservice as
+         * sound/bluetoothHeadsetTakesCall, the way the master volume keeps
+         * sound/soundOutputList (OSEMasterVolumeManager). */
+        StoredSetting<bool> mHeadsetTakesCall;
+        void readStoredSettings();
+        void storeSettings();
+        void applySettings();
+        pbnjson::JValue settingsReply() const;
+        static bool _storedSettingsCb(LSHandle *sh, LSMessage *reply, void *ctx);
 
         /* Media this module paused for a call, to be resumed when it ends.
          * mMediaGeneration invalidates the replies of a pause still in flight
@@ -246,7 +284,21 @@ class PalmLegacyManager : public ModuleInterface
         static void paRingInputCb(pa_context *c, const pa_sink_input_info *info, int eol, void *userdata);
         static void paBtSinkCb(pa_context *c, const pa_sink_info *info, int eol, void *userdata);
         void setJackState(EJackState state);
+        /* Tells audioRouter whether headphones are in (pcm_headphone). */
+        void tellRouterJack();
         void setActiveOutput(const std::string &sinkName);
+        void followUsbOutput(const std::string &sinkName);
+        /* The combined loudspeaker-and-USB sink and the router's override
+         * for it, in line with the output, the call mode and the ringer
+         * switch. */
+        void syncUsbRing();
+        void dropUsbRingSink(uint32_t module);
+        void finishUsbRingDrop(UsbRingDrop *drop);
+        static void paUsbRingLoadedCb(pa_context *c, uint32_t idx, void *userdata);
+        static void paUsbRingStaleCb(pa_context *c, const pa_sink_info *info, int eol, void *userdata);
+        static void paUsbRingDropSinkCb(pa_context *c, const pa_sink_info *info, int eol, void *userdata);
+        static void paUsbRingDropInputCb(pa_context *c, const pa_sink_input_info *info, int eol,
+                                         void *userdata);
         bool jackPlugged() const
         {
             return mJackState == eJack_Headphones || mJackState == eJack_Headset;
@@ -256,6 +308,22 @@ class PalmLegacyManager : public ModuleInterface
          * plugged-in jack taking over from the earpiece, and outside a call
          * the jack or else the loudspeaker. */
         EPhoneRoute effectiveRoute() const;
+
+        /* Hands-free headset: what the call situation is in BtCall's terms,
+         * and opening or closing the SCO link to match it. */
+        BtCall::Situation btSituation() const;
+        void syncBtCall();
+        /* HfpAgent::Listener. Not marked override: the ModuleInterface
+         * overrides in this class are not either (-Winconsistent-missing-override). */
+        void hfpCardAdded(const std::string &card, const std::string &remote);
+        void hfpCardRemoved(const std::string &card);
+        void hfpScoConnected(const std::string &card, unsigned codec);
+        void hfpScoConnectFailed(const std::string &card, const std::string &error);
+        void hfpScoClosed(const std::string &card);
+        void hfpServiceGone();
+        /* The headset is gone or gave the audio back: a call the user had put
+         * on it goes back to the default route. */
+        static void dropBluetoothChoice();
 
         /* Pause whatever is playing through com.webos.service.mediacontroller,
          * and, for a call, play it again once the call is over. */
@@ -360,6 +428,8 @@ class PalmLegacyManager : public ModuleInterface
         /* Root category -- the org.webosports.service.audio surface that
          * luna-sysmgr's DisplayManager and the Settings app already speak. */
         static bool _getStatus(LSHandle *sh, LSMessage *message, void *ctx);
+        static bool _getSettings(LSHandle *sh, LSMessage *message, void *ctx);
+        static bool _setSettings(LSHandle *sh, LSMessage *message, void *ctx);
         static bool _rootSetVolume(LSHandle *sh, LSMessage *message, void *ctx);
         static bool _rootGetVolume(LSHandle *sh, LSMessage *message, void *ctx);
         static bool _setMute(LSHandle *sh, LSMessage *message, void *ctx);

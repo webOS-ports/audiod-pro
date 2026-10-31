@@ -20,7 +20,10 @@
 #include <strings.h>
 
 #include "palmLegacyManager.h"
+#include "settingsRequest.h"
+#include "legacyRequest.h"
 #include "audioPolicyManager.h"
+#include "audioRouter.h"
 #include "main.h"
 
 #define PALM_AUDIO_SERVICE      "com.palm.audio"
@@ -28,6 +31,11 @@
 
 #define MASTER_GET_VOLUME       "luna://com.webos.service.audio/master/getVolume"
 #define MASTER_URI_PREFIX       "luna://com.webos.service.audio/master/"
+/* Where audiod keeps its settings: as OSEMasterVolumeManager does. */
+#define SETTINGS_GET            "luna://com.webos.service.settings/getSystemSettings"
+#define SETTINGS_SET            "luna://com.webos.service.settings/setSystemSettings"
+#define SETTINGS_CATEGORY       "sound"
+#define KEY_ROOT_SETTINGS       "/getSettings"
 
 #define MEDIA_SESSIONS_URI      "luna://com.webos.service.mediacontroller/getActiveMediaSessions"
 #define MEDIA_PLAY_STATUS_URI   "luna://com.webos.service.mediacontroller/getMediaPlayStatus"
@@ -87,6 +95,9 @@ PalmLegacyManager::PalmLegacyManager(ModuleConfig* const pConfObj) :
     mJackSeenUnplugged(false),
     mBtAudioSink(""),
     mBtAudioName(""),
+    mUsbAudioSink(""),
+    mHfpAgent(nullptr),
+    mHeadsetTakesCall(true),
     mResumeMediaAfterCall(false),
     mMediaGeneration(0),
     mPaMainloop(nullptr),
@@ -102,6 +113,7 @@ PalmLegacyManager::PalmLegacyManager(ModuleConfig* const pConfObj) :
 PalmLegacyManager::~PalmLegacyManager()
 {
     PM_LOG_DEBUG("palmLegacyManager destructor");
+    delete mHfpAgent;
 }
 
 /* ------------------------------------------------------------------------- *
@@ -123,6 +135,18 @@ void PalmLegacyManager::replySuccess(LSHandle *sh, LSMessage *message)
         lserror.Print(__FUNCTION__, __LINE__);
 }
 
+/* A payload that passed its schema but lacks what the method needs. */
+static void replyInvalid(LSHandle *sh, LSMessage *message, const char *errorText)
+{
+    pbnjson::JValue reply = pbnjson::Object();
+    reply.put("returnValue", false);
+    reply.put("errorCode", AUDIOD_ERRORCODE_INVALID_PARAMS);
+    reply.put("errorText", errorText);
+    CLSError lserror;
+    if (!LSMessageReply(sh, message, reply.stringify().c_str(), &lserror))
+        lserror.Print(__FUNCTION__, __LINE__);
+}
+
 /* Outbound calls to the Palm-era services (com.palm.telephony and friends) go
  * out under a legacy bus name: those are the identities whose LS2 role grants
  * outbound access to them. */
@@ -141,6 +165,8 @@ LSHandle *PalmLegacyManager::legacyHandle() const
 
 LSMethod PalmLegacyManager::rootMethods[] = {
     { "getStatus",      PalmLegacyManager::_getStatus },
+    { "getSettings",    PalmLegacyManager::_getSettings, LUNA_METHOD_FLAGS_NONE },
+    { "setSettings",    PalmLegacyManager::_setSettings, LUNA_METHOD_FLAGS_NONE },
     { "status",         PalmLegacyManager::_getStatus },
     { "setVolume",      PalmLegacyManager::_rootSetVolume },
     { "getVolume",      PalmLegacyManager::_rootGetVolume },
@@ -485,6 +511,18 @@ void PalmLegacyManager::initialize()
         PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
             "Could not open a PulseAudio connection; call routing is unavailable");
 
+    /* Calls on a hands-free headset: be oFono's audio agent, so its
+     * gateway hands the SCO links to audiod, which routes the call. */
+    mHfpAgent = new(std::nothrow) HfpAgent(*this, [](bool error, const std::string &message) {
+        if (error)
+            PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT, "%s", message.c_str());
+        else
+            PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT, "%s", message.c_str());
+    });
+    if (!mHfpAgent || !mHfpAgent->start())
+        PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+            "Could not start the hands-free audio agent; calls stay off Bluetooth headsets");
+
     /* Mirror the master volume so the root category can serve it without
      * caching a number of its own. */
     subscribeMasterVolume();
@@ -492,7 +530,13 @@ void PalmLegacyManager::initialize()
     /* The active output device is what master/setVolume has to be addressed
      * at, and audioRouter is the thing that knows it. */
     if (mObjModuleManager)
+    {
         mObjModuleManager->subscribeModuleEvent(this, utils::eEventActiveDeviceInfo);
+        /* PulseAudio coming back: see tellRouterJack(). */
+        mObjModuleManager->subscribeModuleEvent(this, utils::eEventMixerStatus);
+        /* settingsservice coming up: the stored settings can be read. */
+        mObjModuleManager->subscribeServerStatusInfo(this, eSettingsService2);
+    }
 
     if (!mPalmHandle && !mPortsHandle)
         PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
@@ -528,6 +572,13 @@ void PalmLegacyManager::deInitialize()
     }
     mPaReady = false;
 
+    if (mHfpAgent)
+    {
+        mHfpAgent->stop();
+        delete mHfpAgent;
+        mHfpAgent = nullptr;
+    }
+
     if (mPalmLegacyManager)
     {
         delete mPalmLegacyManager;
@@ -553,6 +604,26 @@ void PalmLegacyManager::handleEvent(events::EVENTS_T* ev)
                 mActiveSoundOutput = info->deviceName;
                 setActiveOutput(info->deviceName);
             }
+        }
+        break;
+        case utils::eEventMixerStatus:
+        {
+            const events::EVENT_MIXER_STATUS_T *status =
+                (const events::EVENT_MIXER_STATUS_T*) ev;
+            /* audioRouter marked every output disconnected when PulseAudio
+             * went away, the headphones too. PulseAudio announces its sinks
+             * again, but the jack is no sink of its own, and its state only
+             * reaches the router from here, on a change: tell it again. */
+            if (status->mixerStatus && status->mixerType == utils::ePulseMixer && jackPlugged())
+                tellRouterJack();
+        }
+        break;
+        case utils::eEventServerStatusSubscription:
+        {
+            const events::EVENT_SERVER_STATUS_INFO_T *status =
+                (const events::EVENT_SERVER_STATUS_INFO_T*) ev;
+            if (status->serviceName == eSettingsService2 && status->connectionStatus)
+                readStoredSettings();
         }
         break;
         default:
@@ -725,6 +796,9 @@ void PalmLegacyManager::dropPaContext()
     pa_context_unref(mPaContext);
     mPaContext = nullptr;
     mPaReady = false;
+    /* Its operations went with it, callbacks and all. */
+    mUsbRingDrops.clear();
+    mUsbRing.paGone();
 }
 
 void PalmLegacyManager::schedulePaReconnect()
@@ -807,6 +881,13 @@ void PalmLegacyManager::paContextStateCb(pa_context *c, void *userdata)
                 op = pa_context_get_sink_input_info_list(c, &PalmLegacyManager::paRingInputCb, self);
                 if (op)
                     pa_operation_unref(op);
+
+                /* A combined loudspeaker-and-USB sink an earlier audiod left
+                 * goes first; then the one for now can be loaded. */
+                op = pa_context_get_sink_info_by_name(c, UsbRing::SINK,
+                                                      &PalmLegacyManager::paUsbRingStaleCb, self);
+                if (op)
+                    pa_operation_unref(op);
             }
             break;
         case PA_CONTEXT_FAILED:
@@ -821,6 +902,10 @@ void PalmLegacyManager::paContextStateCb(pa_context *c, void *userdata)
             self->mPaReady = false;
             self->mAppliedCallMode = eCallMode_None;
             self->mRingState.clear();
+            /* The combined sink went with PulseAudio: the router must not
+             * send the ringtones to it once PulseAudio is back. */
+            self->mUsbRing.paGone();
+            self->syncUsbRing();
             PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
                 "Lost the PulseAudio connection; call routing is suspended");
             self->schedulePaReconnect();
@@ -987,6 +1072,7 @@ void PalmLegacyManager::paSinkInfoCb(pa_context *c, const pa_sink_info *info, in
     pa_sink_port_info *earpiece = nullptr, *speaker = nullptr;
     pa_sink_port_info *wiredHeadset = nullptr, *wiredHeadphone = nullptr;
     pa_sink_port_info *ringHeadset = nullptr, *ringHeadphone = nullptr;
+    pa_sink_port_info *scoHeadset = nullptr, *sco = nullptr, *scoCarkit = nullptr;
     pa_sink_port_info *highest = nullptr, *preferred = nullptr;
 
     for (uint32_t i = 0; i < info->n_ports; i++)
@@ -1011,6 +1097,15 @@ void PalmLegacyManager::paSinkInfoCb(pa_context *c, const pa_sink_info *info, in
             ringHeadset = p;
         else if (!strcmp(p->name, "output-speaker+wired_headphone") && p->available != PA_PORT_AVAILABLE_NO)
             ringHeadphone = p;
+        /* The droid card's Bluetooth SCO devices (AUDIO_DEVICE_OUT_BLUETOOTH_SCO
+         * and its headset and car kit kinds). Not by availability: the HAL
+         * has no idea whether a headset is connected, BtCall does. */
+        else if (!strcmp(p->name, "output-sco_headset"))
+            scoHeadset = p;
+        else if (!strcmp(p->name, "output-bluetooth_sco"))
+            sco = p;
+        else if (!strcmp(p->name, "output-sco_carkit"))
+            scoCarkit = p;
     }
 
     /* An earpiece or a loudspeaker is what identifies the device's own sink;
@@ -1048,7 +1143,17 @@ void PalmLegacyManager::paSinkInfoCb(pa_context *c, const pa_sink_info *info, in
             preferred = (req->mode != eCallMode_None) ? speaker : nullptr;
             break;
         case ePhoneRoute_BluetoothSCO:
-            preferred = nullptr;    /* handled by the BT card */
+            /* The HAL carries the call to the headset once its output is a
+             * BT SCO device; pulseaudio-modules-droid tells it BT_SCO=on when
+             * the port is selected. A HAL without one cannot, so the earpiece
+             * rather than the speaker. */
+            preferred = scoHeadset ? scoHeadset : (sco ? sco : scoCarkit);
+            if (!preferred)
+            {
+                PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+                    "Sink '%s' has no Bluetooth SCO port; call stays on the earpiece", info->name);
+                preferred = (req->mode != eCallMode_None) ? earpiece : nullptr;
+            }
             break;
         case ePhoneRoute_Earpiece:
         default:
@@ -1096,7 +1201,8 @@ void PalmLegacyManager::paSourceInfoCb(pa_context *c, const pa_source_info *info
     if (info->monitor_of_sink != PA_INVALID_INDEX)
         return;     /* A sink monitor, not a real capture source. */
 
-    pa_source_port_info *builtinMic = nullptr, *headsetMic = nullptr, *preferred = nullptr;
+    pa_source_port_info *builtinMic = nullptr, *headsetMic = nullptr, *btMic = nullptr;
+    const pa_source_port_info *preferred = nullptr;
 
     for (uint32_t i = 0; i < info->n_ports; i++)
     {
@@ -1108,6 +1214,8 @@ void PalmLegacyManager::paSourceInfoCb(pa_context *c, const pa_source_info *info
             builtinMic = p;
         else if (!strcmp(p->name, "input-wired_headset") && p->available != PA_PORT_AVAILABLE_NO)
             headsetMic = p;
+        else if (!strcmp(p->name, "input-bluetooth_sco_headset"))
+            btMic = p;
     }
 
     if (!builtinMic)
@@ -1118,6 +1226,8 @@ void PalmLegacyManager::paSourceInfoCb(pa_context *c, const pa_source_info *info
      * plugged in. */
     if (req->route == ePhoneRoute_HeadsetMic)
         preferred = headsetMic ? headsetMic : builtinMic;
+    else if (req->route == ePhoneRoute_BluetoothSCO)
+        preferred = btMic ? btMic : builtinMic;
     else
         preferred = builtinMic;
 
@@ -1287,15 +1397,36 @@ void PalmLegacyManager::setJackState(EJackState state)
         "Headphone jack state %d -> %d", (int) mJackState, (int) state);
     mJackState = state;
 
+    /* Last connected wins: a plug put in now takes the call from a headset
+     * connected before it. Told before the router, whose answer may
+     * re-route a call already. */
+    if (!wasPlugged && jackPlugged())
+        mBtCall.jackPlugged();
+
+    /* audioRouter decides where media goes: of the jack and a Bluetooth
+     * headset, the one connected last. The jack is a port of pcm_output, so
+     * PulseAudio has no sink of its own to announce for it: tell the router
+     * here. It answers at once with the output now in use (handleEvent ->
+     * setActiveOutput), so on an unplug mBtAudioSink and mUsbAudioSink
+     * below already say whether a headset took the audio over, and a video call
+     * re-routed from there (followVideo) sees that headset rather than
+     * none and stays off the loudspeaker. Told directly rather
+     * than through a module event: the master volume manager would take
+     * pcm_headphone for a device with a volume of its own. */
+    if (wasPlugged != jackPlugged())
+        tellRouterJack();
+
     /* Pulling the plug is the moment music would otherwise carry on out of
      * the loudspeaker. Only a real unplug counts -- going from unknown to
      * unplugged at start-up is not one. During a call there is nothing
      * playing to pause, but resuming afterwards would now be out loud. With
-     * Bluetooth carrying the audio the plug was not playing anything, and
-     * the music goes on in the headset. */
+     * a Bluetooth or USB headset carrying the audio the plug was not playing
+     * anything, and the music goes on in that headset. */
     if (wasPlugged && !jackPlugged())
     {
-        const CallState::Unplug unplug = CallState::unplugged(mCallMode, !mBtAudioSink.empty());
+        const CallState::Unplug unplug = CallState::unplugged(mCallMode,
+            CallState::privateOutput(mBtAudioSink, false) ||
+            CallState::privateOutput(mUsbAudioSink, false));
         if (unplug.pauseMedia)
             pauseMedia(false);
         if (unplug.keepPausedAfterCall)
@@ -1306,16 +1437,237 @@ void PalmLegacyManager::setJackState(EJackState state)
     updateCallMode();
 }
 
+void PalmLegacyManager::tellRouterJack()
+{
+    AudioRouter *router = AudioRouter::getAudioRouterInstance();
+    if (router)
+        router->eventDeviceConnectionStatus("pcm_headphone", "pcm_headphone", "",
+            jackPlugged() ? utils::eDeviceConnected : utils::eDeviceDisconnected,
+            utils::ePulseMixer, true);
+}
+
 static bool isBluetoothSink(const std::string &name)
 {
-    /* PulseAudio 17 names A2DP sinks bluez_sink.<addr>.<profile>; newer ones
-     * use bluez_output. */
-    return name.compare(0, 11, "bluez_sink.") == 0 ||
-           name.compare(0, 13, "bluez_output.") == 0;
+    return CallState::isBluetoothOutput(name);
+}
+
+/* A USB headset is a sink of its own (usb_speaker0, ...), which audioRouter
+ * makes the active output while it is plugged in. Pulling it is an unplug
+ * like the jack's when the music would carry on out of the loudspeaker;
+ * moving on to Bluetooth or the jack is not. */
+void PalmLegacyManager::followUsbOutput(const std::string &sinkName)
+{
+    if (sinkName == mUsbAudioSink ||
+        (!CallState::isUsbOutput(sinkName) && mUsbAudioSink.empty()))
+        return;
+
+    const CallState::Unplug unplug = CallState::outputMoved(mCallMode, mUsbAudioSink,
+                                                            sinkName, jackPlugged());
+    PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+        "USB audio %s -> %s", mUsbAudioSink.empty() ? "none" : mUsbAudioSink.c_str(),
+        sinkName.c_str());
+    mUsbAudioSink = CallState::isUsbOutput(sinkName) ? sinkName : std::string();
+    if (unplug.pauseMedia)
+        pauseMedia(false);
+    if (unplug.keepPausedAfterCall)
+        mResumeMediaAfterCall = false;
+    notifyStatusSubscribers();
+}
+
+/* ------------------------------------------------------------------------- *
+ * A USB headset rings on the loudspeaker too -- see usbRing.h
+ * ------------------------------------------------------------------------- */
+
+void PalmLegacyManager::syncUsbRing()
+{
+    /* At most an unload of the sink for a headset gone and a load for the
+     * one now: next() says Unload only for a loaded module. */
+    for (int step = 0; step < 2; step++)
+    {
+        const UsbRing::Step next = mUsbRing.next();
+        if (next == UsbRing::Step::Unload)
+        {
+            const uint32_t module = mUsbRing.module();
+            mUsbRing.unloading();
+            {
+                /* The router stops sending to the sink before it goes. */
+                AudioRouter *router = AudioRouter::getAudioRouterInstance();
+                if (router)
+                    router->setClassOverride(ClassRoute::Override{});
+            }
+            dropUsbRingSink(module);
+            continue;
+        }
+        if (next == UsbRing::Step::Load && mPaReady && mPaContext)
+        {
+            const std::string args = UsbRing::moduleArguments(mUsbRing.wanted());
+            pa_operation *op = pa_context_load_module(mPaContext, "module-combine-sink", args.c_str(),
+                                                      &PalmLegacyManager::paUsbRingLoadedCb, this);
+            if (op)
+            {
+                pa_operation_unref(op);
+                mUsbRing.loading();
+                PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+                    "USB ring: loading module-combine-sink %s", args.c_str());
+            }
+            else
+                PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+                    "USB ring: could not ask PulseAudio for the combined sink");
+        }
+        break;
+    }
+
+    ClassRoute::Override override;
+    if (mUsbRing.ready())
+    {
+        override.whileOutput = mUsbRing.wanted();
+        override.target = UsbRing::SINK;
+        override.classes = UsbRing::classes(mCallMode, mRingerOn);
+    }
+    AudioRouter *router = AudioRouter::getAudioRouterInstance();
+    if (router)
+        router->setClassOverride(override);
+}
+
+void PalmLegacyManager::paUsbRingLoadedCb(pa_context *, uint32_t idx, void *userdata)
+{
+    PalmLegacyManager *self = static_cast<PalmLegacyManager*>(userdata);
+    if (!self)
+        return;
+
+    if (idx == PA_INVALID_INDEX)
+    {
+        PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+            "USB ring: module-combine-sink did not load; ringtones stay in the USB headset only");
+        self->mUsbRing.loadFailed();
+    }
+    else
+    {
+        PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+            "USB ring: %s is module %u", UsbRing::SINK, idx);
+        self->mUsbRing.loaded(idx);
+    }
+    /* Ready: the router sends the classes to it. Or the headset went while
+     * it loaded: it is unloaded again. */
+    self->syncUsbRing();
+}
+
+void PalmLegacyManager::paUsbRingStaleCb(pa_context *, const pa_sink_info *info, int eol, void *userdata)
+{
+    PalmLegacyManager *self = static_cast<PalmLegacyManager*>(userdata);
+    if (!self)
+        return;
+
+    if (!eol)
+    {
+        if (info && info->owner_module != PA_INVALID_INDEX)
+        {
+            PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+                "USB ring: %s of an earlier audiod is still there, unloading module %u",
+                UsbRing::SINK, info->owner_module);
+            self->dropUsbRingSink(info->owner_module);
+        }
+        return;
+    }
+
+    /* Unloads are sent before any load on the same connection. */
+    self->mUsbRing.checked();
+    self->syncUsbRing();
+}
+
+/* What plays on the sink is moved to the output in use first: unloading a
+ * sink ends the streams on it, and the router's re-routing goes over another
+ * connection, which PulseAudio may well read after this one. */
+void PalmLegacyManager::dropUsbRingSink(uint32_t module)
+{
+    if (!mPaReady || !mPaContext || module == UsbRing::NO_MODULE)
+        return;
+
+    mUsbRingDrops.push_back(UsbRingDrop{this, module, PA_INVALID_INDEX,
+                                        mActiveSoundOutput.empty() ? std::string(UsbRing::SPEAKER)
+                                                                   : mActiveSoundOutput});
+    UsbRingDrop *drop = &mUsbRingDrops.back();
+    pa_operation *op = pa_context_get_sink_info_by_name(mPaContext, UsbRing::SINK,
+                                                        &PalmLegacyManager::paUsbRingDropSinkCb, drop);
+    if (op)
+        pa_operation_unref(op);
+    else
+        finishUsbRingDrop(drop);
+}
+
+void PalmLegacyManager::paUsbRingDropSinkCb(pa_context *c, const pa_sink_info *info, int eol, void *userdata)
+{
+    UsbRingDrop *drop = static_cast<UsbRingDrop*>(userdata);
+    if (!drop)
+        return;
+
+    if (!eol)
+    {
+        if (info && info->owner_module == drop->module)
+            drop->sink = info->index;
+        return;
+    }
+
+    if (drop->sink == PA_INVALID_INDEX)
+    {
+        /* No sink by that name (any more) for this module: just unload. */
+        drop->self->finishUsbRingDrop(drop);
+        return;
+    }
+
+    pa_operation *op = pa_context_get_sink_input_info_list(c, &PalmLegacyManager::paUsbRingDropInputCb, drop);
+    if (op)
+        pa_operation_unref(op);
+    else
+        drop->self->finishUsbRingDrop(drop);
+}
+
+void PalmLegacyManager::paUsbRingDropInputCb(pa_context *c, const pa_sink_input_info *info, int eol,
+                                             void *userdata)
+{
+    UsbRingDrop *drop = static_cast<UsbRingDrop*>(userdata);
+    if (!drop)
+        return;
+
+    if (!eol)
+    {
+        if (info && info->sink == drop->sink)
+        {
+            pa_operation *op = pa_context_move_sink_input_by_name(c, info->index, drop->fallback.c_str(),
+                                                                  nullptr, nullptr);
+            if (op)
+                pa_operation_unref(op);
+        }
+        return;
+    }
+
+    drop->self->finishUsbRingDrop(drop);
+}
+
+void PalmLegacyManager::finishUsbRingDrop(UsbRingDrop *drop)
+{
+    if (mPaReady && mPaContext)
+    {
+        pa_operation *op = pa_context_unload_module(mPaContext, drop->module, nullptr, nullptr);
+        if (op)
+            pa_operation_unref(op);
+    }
+    for (auto it = mUsbRingDrops.begin(); it != mUsbRingDrops.end(); ++it)
+    {
+        if (&*it == drop)
+        {
+            mUsbRingDrops.erase(it);
+            break;
+        }
+    }
 }
 
 void PalmLegacyManager::setActiveOutput(const std::string &sinkName)
 {
+    followUsbOutput(sinkName);
+    mUsbRing.outputIs(sinkName);
+    syncUsbRing();
+
     if (isBluetoothSink(sinkName))
     {
         if (sinkName == mBtAudioSink)
@@ -1351,14 +1703,21 @@ void PalmLegacyManager::setActiveOutput(const std::string &sinkName)
 
     PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
         "Bluetooth audio ended, output is now %s", sinkName.c_str());
-    mBtAudioSink.clear();
-    mBtAudioName.clear();
 
     /* Same as pulling the headphone plug: the headset going away (switched
-     * off, out of range) would otherwise drop the music onto the speaker. */
-    if (mCallMode == eCallMode_None)
+     * off, out of range) would otherwise drop the music onto the speaker.
+     * With headphones in, the music moved to them - because they were
+     * plugged in after the headset connected, or because the headset went
+     * and they are what is left - and goes on there. A USB headset taking
+     * over keeps it private as well. The same rule as a USB headset's
+     * (followUsbOutput) and the jack's (setJackState). */
+    const CallState::Unplug unplug = CallState::outputMoved(mCallMode, mBtAudioSink,
+                                                            sinkName, jackPlugged());
+    mBtAudioSink.clear();
+    mBtAudioName.clear();
+    if (unplug.pauseMedia)
         pauseMedia(false);
-    else
+    if (unplug.keepPausedAfterCall)
         mResumeMediaAfterCall = false;
 
     /* ... and leaving puts a video call back on the loudspeaker. */
@@ -1392,12 +1751,148 @@ PalmLegacyManager::EPhoneRoute PalmLegacyManager::effectiveRoute() const
     if (mCallMode == eCallMode_None)
         return jackPlugged() ? jack : ePhoneRoute_Speaker;
 
+    /* A hands-free headset, once its link is up -- see BtCall for when a
+     * call belongs on it. Until then, or when it cannot be had, the call
+     * goes where it would without one. */
+    if (mBtCall.routed(btSituation()))
+        return ePhoneRoute_BluetoothSCO;
+
+    EPhoneRoute fallback = chosen;
+    if (fallback == ePhoneRoute_BluetoothSCO)
+        fallback = ePhoneRoute_Earpiece;
+
     /* A plug in the jack takes over from the earpiece, as on any phone; a
      * speakerphone the user picked stays the speakerphone. */
-    if (chosen == ePhoneRoute_Earpiece && jackPlugged())
+    if (fallback == ePhoneRoute_Earpiece && jackPlugged())
         return jack;
 
-    return chosen;
+    return fallback;
+}
+
+/* ------------------------------------------------------------------------- *
+ * Hands-free headsets (HFP) -- see btCall.h and hfpAgent.h
+ * ------------------------------------------------------------------------- */
+
+BtCall::Situation PalmLegacyManager::btSituation() const
+{
+    const LegacyCategory *phone = categoryByName("/phone");
+    BtCall::Choice choice = BtCall::Choice::Default;
+
+    switch (phone ? phone->route : ePhoneRoute_Earpiece)
+    {
+        case ePhoneRoute_Speaker:       choice = BtCall::Choice::Speaker; break;
+        case ePhoneRoute_BluetoothSCO:  choice = BtCall::Choice::Bluetooth; break;
+        /* A wired route picked by its scenario keeps the call on the wire. */
+        case ePhoneRoute_Headset:
+        case ePhoneRoute_HeadsetMic:    choice = BtCall::Choice::Handset; break;
+        default:                        break;
+    }
+
+    return BtCall::Situation{mCallMode, choice, jackPlugged()};
+}
+
+void PalmLegacyManager::syncBtCall()
+{
+    switch (mBtCall.sync(btSituation()))
+    {
+        case BtCall::Action::Connect:
+            if (!mHfpAgent || !mHfpAgent->connectSco(mBtCall.scoCard()))
+            {
+                PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+                    "Could not ask for an SCO link to %s", mBtCall.scoCard().c_str());
+                mBtCall.connectFailed();
+            }
+            break;
+        case BtCall::Action::Disconnect:
+            if (mHfpAgent)
+                mHfpAgent->disconnectSco();
+            break;
+        case BtCall::Action::None:
+        default:
+            break;
+    }
+}
+
+void PalmLegacyManager::dropBluetoothChoice()
+{
+    LegacyCategory *phone = categoryByName("/phone");
+    if (phone && phone->route == ePhoneRoute_BluetoothSCO)
+        phone->route = ePhoneRoute_Earpiece;
+}
+
+void PalmLegacyManager::hfpCardAdded(const std::string &card, const std::string &remote)
+{
+    if (!mBtCall.cardAdded(card, remote))
+        return;
+
+    PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+        "Hands-free headset %s connected (%s)", remote.c_str(), card.c_str());
+    /* During a call this is where the call moves onto it. */
+    updateCallMode();
+}
+
+void PalmLegacyManager::hfpCardRemoved(const std::string &card)
+{
+    if (!mBtCall.cardRemoved(card))
+        return;
+
+    PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+        "Hands-free headset %s disconnected", card.c_str());
+    if (!mBtCall.available())
+        dropBluetoothChoice();
+    updateCallMode();
+}
+
+void PalmLegacyManager::hfpScoConnected(const std::string &card, unsigned codec)
+{
+    switch (mBtCall.scoConnected(card, btSituation()))
+    {
+        case BtCall::Arrival::Asked:
+            PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+                "SCO link to %s is up (codec %u), moving the call onto it", card.c_str(), codec);
+            break;
+        case BtCall::Arrival::ByHeadset:
+        {
+            PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+                "The headset took the call audio (%s)", card.c_str());
+            LegacyCategory *phone = categoryByName("/phone");
+            if (phone)
+                phone->route = ePhoneRoute_BluetoothSCO;
+            break;
+        }
+        case BtCall::Arrival::Unwanted:
+        default:
+            PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+                "SCO link to %s is not wanted, closing it", card.c_str());
+            if (mHfpAgent)
+                mHfpAgent->disconnectSco();
+            break;
+    }
+    updateCallMode();
+}
+
+void PalmLegacyManager::hfpScoConnectFailed(const std::string &card, const std::string &error)
+{
+    PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+        "No SCO link to %s (%s); the call stays on the phone", card.c_str(), error.c_str());
+    mBtCall.connectFailed();
+    updateCallMode();
+}
+
+void PalmLegacyManager::hfpScoClosed(const std::string &card)
+{
+    PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+        "The SCO link to %s closed; the call goes back to the phone", card.c_str());
+    mBtCall.scoClosed(true);
+    dropBluetoothChoice();
+    updateCallMode();
+}
+
+void PalmLegacyManager::hfpServiceGone()
+{
+    mBtCall.serviceGone();
+    dropBluetoothChoice();
+    updateCallMode();
 }
 
 /* ------------------------------------------------------------------------- *
@@ -1563,6 +2058,16 @@ void PalmLegacyManager::sendMediaKey(const char *keyEvent)
 void PalmLegacyManager::updateCallMode()
 {
     followVideo();
+
+    /* A call takes the ringtones and alerts off the loudspeaker a USB
+     * headset rings on too, and its end puts them back. */
+    syncUsbRing();
+
+    /* The SCO link first: effectiveRoute() only puts the call on the
+     * headset once the link is up, and a link no longer wanted is closed
+     * after the call has been moved off it below. */
+    syncBtCall();
+
     const EPhoneRoute route = effectiveRoute();
 
     /* The bug this guards against, found by decompiling the webOS 3.0.5 audiod
@@ -1616,7 +2121,7 @@ void PalmLegacyManager::followVideo()
     now.videoCall = (mCallMode == eCallMode_Voip) && mCallState.video();
     now.onEarpiece = (phone->route == ePhoneRoute_Earpiece);
     now.onSpeaker = (phone->route == ePhoneRoute_Speaker);
-    now.headset = jackPlugged() || !mBtAudioSink.empty();
+    now.headset = jackPlugged() || !mBtAudioSink.empty() || mBtCall.available();
     now.noSpeaker = mDisabledScenarios.count(scenarioName(phone, ePhoneRoute_Speaker)) > 0;
 
     const VideoSpeaker::Move move = mVideoSpeaker.update(now);
@@ -1643,9 +2148,12 @@ void PalmLegacyManager::applyCallStatus()
     if (change.resetSpeaker)
     {
         LegacyCategory *phone = categoryByName("/phone");
-        if (phone && phone->route == ePhoneRoute_Speaker)
+        if (phone && (phone->route == ePhoneRoute_Speaker ||
+                      phone->route == ePhoneRoute_BluetoothSCO))
             phone->route = ePhoneRoute_Earpiece;
         mVideoSpeaker.callEnded();
+        /* So does a headset chosen, given back or failed for it. */
+        mBtCall.callEnded();
     }
 
     /* Mute belongs to the call too. A call hung up while muted left the
@@ -1707,6 +2215,14 @@ pbnjson::JValue PalmLegacyManager::rootStatus() const
     reply.put("headsetState", jackNames[mJackState]);
     reply.put("bluetoothAudio", !mBtAudioSink.empty());
     reply.put("bluetoothAudioName", mBtAudioName);
+    reply.put("usbAudio", !mUsbAudioSink.empty());
+
+    /* Hands-free: a headset the call can go to (the phone app's route
+     * button offers it), and whether the call is on it now. */
+    reply.put("bluetoothCall", mBtCall.available());
+    reply.put("bluetoothCallAddress", mBtCall.address());
+    reply.put("bluetoothCallActive", mCallMode != eCallMode_None &&
+                                     mAppliedRoute == ePhoneRoute_BluetoothSCO);
     return reply;
 }
 
@@ -1790,16 +2306,150 @@ bool PalmLegacyManager::_getStatus(LSHandle *sh, LSMessage *message, void *ctx)
     return true;
 }
 
-bool PalmLegacyManager::_rootSetVolume(LSHandle *sh, LSMessage *message, void *ctx)
+/* ------------------------------------------------------------------------- *
+ * Settings: getSettings / setSettings, kept in settingsservice
+ * ------------------------------------------------------------------------- */
+
+pbnjson::JValue PalmLegacyManager::settingsReply() const
+{
+    pbnjson::JValue reply = pbnjson::Object();
+    reply.put("returnValue", true);
+    reply.put(SETTING_HEADSET_TAKES_CALL, mHeadsetTakesCall.value());
+    return reply;
+}
+
+void PalmLegacyManager::applySettings()
+{
+    mBtCall.setTakesCallOnConnect(mHeadsetTakesCall.value());
+    postCategoryStatus(KEY_ROOT_SETTINGS, settingsReply());
+}
+
+void PalmLegacyManager::readStoredSettings()
+{
+    CLSError lserror;
+    LSHandle *sh = GetPalmService();
+    pbnjson::JValue keys = pbnjson::Array();
+    keys.append(SETTING_HEADSET_TAKES_CALL);
+    pbnjson::JValue payload = pbnjson::Object();
+    payload.put("category", SETTINGS_CATEGORY);
+    payload.put("keys", keys);
+    if (!sh || !LSCallOneReply(sh, SETTINGS_GET, payload.stringify().c_str(),
+                               &PalmLegacyManager::_storedSettingsCb, this, nullptr, &lserror))
+    {
+        lserror.Print(__FUNCTION__, __LINE__);
+        PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+            "Could not read the stored settings; using the defaults");
+    }
+}
+
+bool PalmLegacyManager::_storedSettingsCb(LSHandle *, LSMessage *reply, void *ctx)
+{
+    PalmLegacyManager *self = static_cast<PalmLegacyManager*>(ctx);
+    const char *payload = reply ? LSMessageGetPayload(reply) : nullptr;
+    if (!self || !payload)
+        return true;
+
+    /* A key never stored comes back missing (or the call fails): the
+     * default stays. */
+    pbnjson::JValue obj = pbnjson::JDomParser::fromString(payload);
+    bool takes = true;
+    if (obj.isObject() && obj["settings"].isObject() &&
+        obj["settings"][SETTING_HEADSET_TAKES_CALL].isBoolean() &&
+        obj["settings"][SETTING_HEADSET_TAKES_CALL].asBool(takes) == CONV_OK)
+    {
+        PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+            "Stored setting %s: %d", SETTING_HEADSET_TAKES_CALL, (int) takes);
+        if (self->mHeadsetTakesCall.stored(takes))
+            self->applySettings();
+    }
+    return true;
+}
+
+void PalmLegacyManager::storeSettings()
+{
+    CLSError lserror;
+    LSHandle *sh = GetPalmService();
+    pbnjson::JValue settings = pbnjson::Object();
+    settings.put(SETTING_HEADSET_TAKES_CALL, mHeadsetTakesCall.value());
+    pbnjson::JValue payload = pbnjson::Object();
+    payload.put("category", SETTINGS_CATEGORY);
+    payload.put("settings", settings);
+    if (!sh || !LSCall(sh, SETTINGS_SET, payload.stringify().c_str(), nullptr, nullptr, nullptr, &lserror))
+    {
+        lserror.Print(__FUNCTION__, __LINE__);
+        PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+            "Could not store the settings; they last until audiod restarts");
+    }
+}
+
+bool PalmLegacyManager::_getSettings(LSHandle *sh, LSMessage *message, void * /*ctx*/)
 {
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
-    LSMessageJsonParser msg(message, SCHEMA_2(REQUIRED(volume, integer),
-                                              OPTIONAL(scenario, string)));
+    CLSError lserror;
+    bool subscribed = false;
+
+    if (!LSSubscriptionProcess(sh, message, &subscribed, &lserror))
+        lserror.Print(__FUNCTION__, __LINE__);
+
+    pbnjson::JValue reply = self ? self->settingsReply() : pbnjson::Object();
+    if (!self)
+        reply.put("returnValue", false);
+    if (subscribed)
+        reply.put("subscribed", true);
+
+    replyJson(sh, message, reply);
+    return true;
+}
+
+bool PalmLegacyManager::_setSettings(LSHandle *sh, LSMessage *message, void * /*ctx*/)
+{
+    PalmLegacyManager *self = getPalmLegacyManagerInstance();
+    LSMessageJsonParser msg(message, SettingsRequest::SET_SCHEMA);
     if (!msg.parse(__FUNCTION__, sh))
         return true;
 
-    int volume = 0;
-    msg.get("volume", volume);
+    /* Refused, not a default applied: '{}' turned the setting off. */
+    const std::optional<bool> takes = SettingsRequest::headsetTakesCall(msg.get());
+    if (!takes)
+    {
+        CLSError lserror;
+        if (!LSMessageReply(sh, message, STANDARD_JSON_ERROR(AUDIOD_ERRORCODE_INVALID_PARAMS,
+                "bluetoothHeadsetTakesCall must be true or false"), &lserror))
+            lserror.Print(__FUNCTION__, __LINE__);
+        return true;
+    }
+
+    if (self)
+    {
+        PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+            "Setting %s: %d", SETTING_HEADSET_TAKES_CALL, (int) *takes);
+        const bool changed = self->mHeadsetTakesCall.set(*takes);
+        /* Stored also when unchanged: the stored value may still be the
+         * default's absence, or older than what the user sees. */
+        self->storeSettings();
+        if (changed)
+            self->applySettings();
+    }
+
+    replySuccess(sh, message);
+    return true;
+}
+
+bool PalmLegacyManager::_rootSetVolume(LSHandle *sh, LSMessage *message, void *ctx)
+{
+    PalmLegacyManager *self = getPalmLegacyManagerInstance();
+    LSMessageJsonParser msg(message, LegacyRequest::SET_VOLUME);
+    if (!msg.parse(__FUNCTION__, sh))
+        return true;
+
+    /* Not 0 for a volume that is not there: '{}' silenced the output. */
+    const std::optional<int32_t> requested = LegacyRequest::integer(msg.get(), "volume");
+    if (!requested)
+    {
+        replyInvalid(sh, message, "volume must be an integer");
+        return true;
+    }
+    const int volume = *requested;
 
     if (volume < 0 || volume > 100)
     {
@@ -1886,15 +2536,41 @@ bool PalmLegacyManager::_setCallMode(LSHandle *sh, LSMessage *message, void *ctx
      * path and the one com.palm.app.phone uses. inCall is the phone app's
      * cellular call only: VoIP calls are reported by their connectors. */
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
-    LSMessageJsonParser msg(message, SCHEMA_2(OPTIONAL(inCall, boolean),
-                                              OPTIONAL(speakerMode, boolean)));
+    LSMessageJsonParser msg(message, SCHEMA_3(OPTIONAL(inCall, boolean),
+                                              OPTIONAL(speakerMode, boolean),
+                                              OPTIONAL(route, string)));
     if (!msg.parse(__FUNCTION__, sh))
         return true;
+
+    /* route, where the call's audio goes: "speaker", "handset" (the
+     * earpiece, also with a headset connected), "bluetooth" (a hands-free
+     * headset), or "default" (the earpiece, the jack or a headset, whichever
+     * was connected last). speakerMode true is "speaker", false "default". */
+    const pbnjson::JValue routeArg = msg.get()["route"];
+    BtCall::Choice choice = BtCall::Choice::Default;
+    if (routeArg.isString())
+    {
+        const std::string r = routeArg.asString();
+        if (r == "speaker")
+            choice = BtCall::Choice::Speaker;
+        else if (r == "handset")
+            choice = BtCall::Choice::Handset;
+        else if (r == "bluetooth")
+            choice = BtCall::Choice::Bluetooth;
+        else if (r != "default")
+        {
+            CLSError lserror;
+            const char *reply = STANDARD_JSON_ERROR(AUDIOD_ERRORCODE_INVALID_PARAMS,
+                "route must be speaker, handset, bluetooth or default");
+            if (!LSMessageReply(sh, message, reply, &lserror))
+                lserror.Print(__FUNCTION__, __LINE__);
+            return true;
+        }
+    }
 
     if (self)
     {
         LegacyCategory *phone = categoryByName("/phone");
-        bool speakerMode = phone && phone->route == ePhoneRoute_Speaker;
 
         /* Only what the caller actually sent: {"speakerMode":true} on its own
          * is the speaker button mid-call and must leave the call up. Not
@@ -1904,17 +2580,34 @@ bool PalmLegacyManager::_setCallMode(LSHandle *sh, LSMessage *message, void *ctx
         pbnjson::JValue payload = msg.get();
         if (payload["inCall"].isBoolean())
             self->mCallState.setCarrierCall(payload["inCall"].asBool());
-        if (payload["speakerMode"].isBoolean())
-        {
-            speakerMode = payload["speakerMode"].asBool();
-            /* With inCall it is the phone app starting a cellular call on
-             * the earpiece, not a choice the video call has to respect. */
-            if (!payload["inCall"].isBoolean())
-                self->mVideoSpeaker.userPicked();
-        }
+        if (payload["speakerMode"].isBoolean() && !routeArg.isString())
+            choice = payload["speakerMode"].asBool() ? BtCall::Choice::Speaker
+                                                     : BtCall::Choice::Default;
+        /* With inCall it is the phone app starting a cellular call on the
+         * earpiece, not a choice the video call has to respect. */
+        if ((routeArg.isString() || payload["speakerMode"].isBoolean()) &&
+            !payload["inCall"].isBoolean())
+            self->mVideoSpeaker.userPicked();
 
-        if (phone)
-            phone->route = speakerMode ? ePhoneRoute_Speaker : ePhoneRoute_Earpiece;
+        /* Neither: only the call state changed, and the route stays as
+         * it was. */
+        if (phone && (routeArg.isString() || payload["speakerMode"].isBoolean()))
+        {
+            switch (choice)
+            {
+                case BtCall::Choice::Speaker:   phone->route = ePhoneRoute_Speaker; break;
+                case BtCall::Choice::Bluetooth: phone->route = ePhoneRoute_BluetoothSCO; break;
+                default:                        phone->route = ePhoneRoute_Earpiece; break;
+            }
+            self->mBtCall.chose(choice);
+        }
+        else if (phone && phone->route != ePhoneRoute_Speaker &&
+                 phone->route != ePhoneRoute_BluetoothSCO)
+        {
+            /* What it always did with only inCall: anything but the
+             * speaker (or now the headset) back to the earpiece. */
+            phone->route = ePhoneRoute_Earpiece;
+        }
 
         self->applyCallStatus();
     }
@@ -1973,13 +2666,18 @@ bool PalmLegacyManager::_setVolume(LSHandle *sh, LSMessage *message, void *ctx)
     /* scenario is optional in the Palm API and callers do send it; rejecting it
      * as an unknown property (SCHEMA_n sets additionalProperties:false) is what
      * made per-scenario volume sets fail outright. */
-    LSMessageJsonParser msg(message, SCHEMA_2(REQUIRED(volume, integer),
-                                              OPTIONAL(scenario, string)));
+    LSMessageJsonParser msg(message, LegacyRequest::SET_VOLUME);
     if (!msg.parse(__FUNCTION__, sh))
         return true;
 
-    int volume = 0;
-    msg.get("volume", volume);
+    /* Not 0 for a volume that is not there: '{}' silenced the output. */
+    const std::optional<int32_t> requested = LegacyRequest::integer(msg.get(), "volume");
+    if (!requested)
+    {
+        replyInvalid(sh, message, "volume must be an integer");
+        return true;
+    }
+    const int volume = *requested;
 
     CLSError lserror;
     if (volume < 0 || volume > 100)
@@ -2027,14 +2725,17 @@ bool PalmLegacyManager::_offsetVolume(LSHandle *sh, LSMessage *message, void *ct
 {
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
     LegacyCategory *cat = categoryFor(message);
-    LSMessageJsonParser msg(message, SCHEMA_3(REQUIRED(offset, integer),
-                                              OPTIONAL(scenario, string),
-                                              OPTIONAL(unit, string)));
+    LSMessageJsonParser msg(message, LegacyRequest::OFFSET_VOLUME);
     if (!msg.parse(__FUNCTION__, sh))
         return true;
 
-    int offset = 0;
-    msg.get("offset", offset);
+    const std::optional<int32_t> requested = LegacyRequest::integer(msg.get(), "offset");
+    if (!requested)
+    {
+        replyInvalid(sh, message, "offset must be an integer");
+        return true;
+    }
+    const int offset = *requested;
 
     AudioPolicyManager *policy = AudioPolicyManager::getAudioPolicyManagerInstance();
     CLSError lserror;
@@ -2067,12 +2768,18 @@ bool PalmLegacyManager::_setMuted(LSHandle *sh, LSMessage *message, void *ctx)
 {
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
     LegacyCategory *cat = categoryFor(message);
-    LSMessageJsonParser msg(message, SCHEMA_1(REQUIRED(muted, boolean)));
+    LSMessageJsonParser msg(message, LegacyRequest::SET_MUTED);
     if (!msg.parse(__FUNCTION__, sh))
         return true;
 
-    bool muted = false;
-    msg.get("muted", muted);
+    /* Not false for a muted that is not there: '{}' unmuted the category. */
+    const std::optional<bool> requested = LegacyRequest::boolean(msg.get(), "muted");
+    if (!requested)
+    {
+        replyInvalid(sh, message, "muted must be true or false");
+        return true;
+    }
+    const bool muted = *requested;
 
     AudioPolicyManager *policy = AudioPolicyManager::getAudioPolicyManagerInstance();
     if (self && cat && cat->streamType && policy)
@@ -2115,12 +2822,11 @@ bool PalmLegacyManager::_setCurrentScenario(LSHandle *sh, LSMessage *message, vo
 {
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
     LegacyCategory *cat = categoryFor(message);
-    LSMessageJsonParser msg(message, SCHEMA_1(REQUIRED(scenario, string)));
+    LSMessageJsonParser msg(message, LegacyRequest::SCENARIO);
     if (!msg.parse(__FUNCTION__, sh))
         return true;
 
-    std::string scenario;
-    msg.get("scenario", scenario);
+    const std::string scenario = LegacyRequest::string(msg.get(), "scenario").value_or(std::string());
 
     EPhoneRoute route = ePhoneRoute_Earpiece;
     CLSError lserror;
@@ -2147,6 +2853,12 @@ bool PalmLegacyManager::_setCurrentScenario(LSHandle *sh, LSMessage *message, vo
     if (0 == strcmp(cat->category, "/phone"))
     {
         self->mVideoSpeaker.userPicked();
+        /* The Palm phone app's route picker: the front speaker picked
+         * there is the handset, also with a headset connected. */
+        self->mBtCall.chose(route == ePhoneRoute_BluetoothSCO ? BtCall::Choice::Bluetooth
+                          : route == ePhoneRoute_Speaker      ? BtCall::Choice::Speaker
+                          : route == ePhoneRoute_Earpiece     ? BtCall::Choice::Handset
+                                                              : BtCall::Choice::Default);
         /* The decompiled 3.0.5 audiod dropped routing changes outright unless
          * the call was already Active, which silently lost every scenario
          * switch made while a call was still ringing or dialing. Push it
@@ -2251,12 +2963,19 @@ bool PalmLegacyManager::_vvmControl(LSHandle *sh, LSMessage *message, void *ctx)
 bool PalmLegacyManager::_phoneSetMuted(LSHandle *sh, LSMessage *message, void *ctx)
 {
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
-    LSMessageJsonParser msg(message, SCHEMA_1(REQUIRED(muted, boolean)));
+    LSMessageJsonParser msg(message, LegacyRequest::SET_MUTED);
     if (!msg.parse(__FUNCTION__, sh))
         return true;
 
-    bool muted = false;
-    msg.get("muted", muted);
+    /* Not false for a muted that is not there: '{}' opened the microphone
+     * of a muted call. */
+    const std::optional<bool> requested = LegacyRequest::boolean(msg.get(), "muted");
+    if (!requested)
+    {
+        replyInvalid(sh, message, "muted must be true or false");
+        return true;
+    }
+    const bool muted = *requested;
 
     if (self)
     {
@@ -2288,7 +3007,7 @@ bool PalmLegacyManager::_phoneSetMuted(LSHandle *sh, LSMessage *message, void *c
 bool PalmLegacyManager::_callStatusUpdate(LSHandle *sh, LSMessage *message, void *ctx)
 {
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
-    LSMessageJsonParser msg(message, SCHEMA_1(REQUIRED(lines, array)));
+    LSMessageJsonParser msg(message, LegacyRequest::CALL_STATUS);
     if (!msg.parse(__FUNCTION__, sh))
         return true;
 
@@ -2301,7 +3020,7 @@ bool PalmLegacyManager::_callStatusUpdate(LSHandle *sh, LSMessage *message, void
     pbnjson::JValue lines = msg.get()["lines"];
     if (!lines.isArray())
     {
-        replySuccess(sh, message);
+        replyInvalid(sh, message, "lines must be an array");
         return true;
     }
 
@@ -2401,12 +3120,11 @@ bool PalmLegacyManager::_enableScenario(LSHandle *sh, LSMessage *message, void *
 {
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
     LegacyCategory *cat = categoryFor(message);
-    LSMessageJsonParser msg(message, SCHEMA_1(REQUIRED(scenario, string)));
+    LSMessageJsonParser msg(message, LegacyRequest::SCENARIO);
     if (!msg.parse(__FUNCTION__, sh))
         return true;
 
-    std::string scenario;
-    msg.get("scenario", scenario);
+    const std::string scenario = LegacyRequest::string(msg.get(), "scenario").value_or(std::string());
 
     EPhoneRoute route = ePhoneRoute_Earpiece;
     CLSError lserror;
@@ -2429,12 +3147,11 @@ bool PalmLegacyManager::_disableScenario(LSHandle *sh, LSMessage *message, void 
 {
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
     LegacyCategory *cat = categoryFor(message);
-    LSMessageJsonParser msg(message, SCHEMA_1(REQUIRED(scenario, string)));
+    LSMessageJsonParser msg(message, LegacyRequest::SCENARIO);
     if (!msg.parse(__FUNCTION__, sh))
         return true;
 
-    std::string scenario;
-    msg.get("scenario", scenario);
+    const std::string scenario = LegacyRequest::string(msg.get(), "scenario").value_or(std::string());
 
     EPhoneRoute route = ePhoneRoute_Earpiece;
     CLSError lserror;
@@ -2497,25 +3214,24 @@ bool PalmLegacyManager::_telephonyAnswered(LSHandle *sh, LSMessage *message, voi
 bool PalmLegacyManager::_playDTMF(LSHandle *sh, LSMessage *message, void *ctx)
 {
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
-    /* The dialpad sends {"id":"5","oneshot":true,"feedbackOnly":false} -- "id",
-     * not "name", and the other two decide whether the tone also has to reach
-     * the far end. */
-    LSMessageJsonParser msg(message, SCHEMA_4(REQUIRED(id, string),
-                                              OPTIONAL(oneshot, boolean),
-                                              OPTIONAL(feedbackOnly, boolean),
-                                              OPTIONAL(name, string)));
+    /* enyo's dialpad sends {"id":"5","oneshot":true,"feedbackOnly":false}, the
+     * QML Phone app {"name":"5"} (with "feedbackOnly":true in a call); the
+     * other two decide whether the tone also has to reach the far end. */
+    LSMessageJsonParser msg(message, LegacyRequest::PLAY_DTMF);
     if (!msg.parse(__FUNCTION__, sh))
         return true;
 
-    std::string id;
-    bool oneshot = true;
-    bool feedbackOnly = false;
-
-    if (!msg.get("id", id))
-        msg.get("name", id);
-    if (!msg.get("oneshot", oneshot))
-        oneshot = true;
-    msg.get("feedbackOnly", feedbackOnly);
+    /* Without id or name there is nothing to play: '{}' sent the network an
+     * empty tone sequence during a call and answered success. */
+    const std::optional<std::string> keys = LegacyRequest::dtmfKeys(msg.get());
+    if (!keys || keys->empty())
+    {
+        replyInvalid(sh, message, "id (or name) must name the dialpad keys to play");
+        return true;
+    }
+    const std::string id = *keys;
+    const bool oneshot = LegacyRequest::boolean(msg.get(), "oneshot").value_or(true);
+    const bool feedbackOnly = LegacyRequest::boolean(msg.get(), "feedbackOnly").value_or(false);
 
     CLSError lserror;
     for (const char ch : id)
@@ -2597,12 +3313,18 @@ bool PalmLegacyManager::_stopDTMF(LSHandle *sh, LSMessage *message, void *ctx)
 bool PalmLegacyManager::_setRingerSwitch(LSHandle *sh, LSMessage *message, void *ctx)
 {
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
-    LSMessageJsonParser msg(message, SCHEMA_1(REQUIRED(ringtone, boolean)));
+    LSMessageJsonParser msg(message, LegacyRequest::RINGER_SWITCH);
     if (!msg.parse(__FUNCTION__, sh))
         return true;
 
-    bool ringerOn = true;
-    msg.get("ringtone", ringerOn);
+    /* Not false for a ringtone that is not there: '{}' silenced the ringer. */
+    const std::optional<bool> requested = LegacyRequest::boolean(msg.get(), "ringtone");
+    if (!requested)
+    {
+        replyInvalid(sh, message, "ringtone must be true or false");
+        return true;
+    }
+    const bool ringerOn = *requested;
 
     AudioPolicyManager *policy = AudioPolicyManager::getAudioPolicyManagerInstance();
     LegacyCategory *ringtone = categoryByName("/ringtone");
@@ -2617,6 +3339,9 @@ bool PalmLegacyManager::_setRingerSwitch(LSHandle *sh, LSMessage *message, void 
         /* And, as on 2.x, alerts only lower the music with the switch on. */
         if (policy)
             policy->setRingerOn(ringerOn);
+        /* With a USB headset, alerts ring on the loudspeaker too only with
+         * the switch on. */
+        self->syncUsbRing();
         self->notifyStatusSubscribers();
     }
 
@@ -2633,21 +3358,20 @@ bool PalmLegacyManager::_playFeedback(LSHandle *sh, LSMessage *message, void *ct
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
     /* Matches the Palm schema: enyo passes override and type on some paths and
      * an additionalProperties:false schema without them rejects the call. */
-    LSMessageJsonParser msg(message, SCHEMA_5(REQUIRED(name, string),
-                                              OPTIONAL(sink, string),
-                                              OPTIONAL(play, boolean),
-                                              OPTIONAL(override, boolean),
-                                              OPTIONAL(type, string)));
+    LSMessageJsonParser msg(message, LegacyRequest::PLAY_FEEDBACK);
     if (!msg.parse(__FUNCTION__, sh))
         return true;
 
-    std::string name;
-    std::string sinkName;
-    bool play = true;
-    msg.get("name", name);
-    msg.get("sink", sinkName);
-    if (!msg.get("play", play))
-        play = true;
+    /* '{}' played the sound "" and answered success. */
+    const std::optional<std::string> sound = LegacyRequest::string(msg.get(), "name");
+    if (!sound || sound->empty())
+    {
+        replyInvalid(sh, message, "name must name a system sound");
+        return true;
+    }
+    const std::string name = *sound;
+    const std::string sinkName = LegacyRequest::string(msg.get(), "sink").value_or(std::string());
+    const bool play = LegacyRequest::boolean(msg.get(), "play").value_or(true);
 
     if (play && self && self->mObjAudioMixer)
     {
