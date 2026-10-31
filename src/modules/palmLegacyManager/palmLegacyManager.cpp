@@ -1526,6 +1526,8 @@ void PalmLegacyManager::syncUsbRing()
         override.target = UsbRing::SINK;
         override.classes = UsbRing::classes(mCallMode, mRingerOn);
     }
+    else
+        override = mBtRing.classOverride(mCallMode);
     AudioRouter *router = AudioRouter::getAudioRouterInstance();
     if (router)
         router->setClassOverride(override);
@@ -1668,6 +1670,7 @@ void PalmLegacyManager::setActiveOutput(const std::string &sinkName)
 {
     followUsbOutput(sinkName);
     mUsbRing.outputIs(sinkName);
+    mBtRing.outputIs(sinkName);
     syncUsbRing();
 
     if (isBluetoothSink(sinkName))
@@ -2103,7 +2106,8 @@ void PalmLegacyManager::updateCallMode()
     followVideo();
 
     /* A call takes the ringtones and alerts off the loudspeaker a USB
-     * headset rings on too, and its end puts them back. */
+     * headset rings on too, and the ringtones off the loudspeaker a
+     * Bluetooth headset leaves them on; its end puts them back. */
     syncUsbRing();
 
     /* The SCO link first: effectiveRoute() only puts the call on the

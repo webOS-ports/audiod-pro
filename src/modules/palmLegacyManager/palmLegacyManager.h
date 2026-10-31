@@ -33,6 +33,7 @@
 #include "callState.h"
 #include "ringState.h"
 #include "usbRing.h"
+#include "btRing.h"
 #include "storedSetting.h"
 #include "paReconnect.h"
 #include "videoSpeaker.h"
@@ -185,6 +186,9 @@ class PalmLegacyManager : public ModuleInterface, private HfpAgent::Listener
         /* While a USB headset carries the audio, the ringtones and alerts go
          * to a sink combining it with the loudspeaker: see usbRing.h. */
         UsbRing mUsbRing;
+        /* While a Bluetooth headset carries the audio, the ringtones stay on
+         * the loudspeaker: see btRing.h. */
+        BtRing mBtRing;
         /* Taking the combined sink down: what plays on it is moved to
          * fallback, then its module is unloaded. A chain of callbacks on
          * mPaContext; dropPaContext() frees what a dead context left. */
@@ -294,8 +298,8 @@ class PalmLegacyManager : public ModuleInterface, private HfpAgent::Listener
         void setActiveOutput(const std::string &sinkName);
         void followUsbOutput(const std::string &sinkName);
         /* The combined loudspeaker-and-USB sink and the router's override
-         * for it, in line with the output, the call mode and the ringer
-         * switch. */
+         * for it, or the Bluetooth headset's, in line with the output, the
+         * call mode and the ringer switch. */
         void syncUsbRing();
         void dropUsbRingSink(uint32_t module);
         void finishUsbRingDrop(UsbRingDrop *drop);
