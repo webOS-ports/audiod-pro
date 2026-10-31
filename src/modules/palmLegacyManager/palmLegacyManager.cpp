@@ -2822,12 +2822,11 @@ bool PalmLegacyManager::_setCurrentScenario(LSHandle *sh, LSMessage *message, vo
 {
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
     LegacyCategory *cat = categoryFor(message);
-    LSMessageJsonParser msg(message, SCHEMA_1(REQUIRED(scenario, string)));
+    LSMessageJsonParser msg(message, LegacyRequest::SCENARIO);
     if (!msg.parse(__FUNCTION__, sh))
         return true;
 
-    std::string scenario;
-    msg.get("scenario", scenario);
+    const std::string scenario = LegacyRequest::string(msg.get(), "scenario").value_or(std::string());
 
     EPhoneRoute route = ePhoneRoute_Earpiece;
     CLSError lserror;
@@ -3008,7 +3007,7 @@ bool PalmLegacyManager::_phoneSetMuted(LSHandle *sh, LSMessage *message, void *c
 bool PalmLegacyManager::_callStatusUpdate(LSHandle *sh, LSMessage *message, void *ctx)
 {
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
-    LSMessageJsonParser msg(message, SCHEMA_1(REQUIRED(lines, array)));
+    LSMessageJsonParser msg(message, LegacyRequest::CALL_STATUS);
     if (!msg.parse(__FUNCTION__, sh))
         return true;
 
@@ -3021,7 +3020,7 @@ bool PalmLegacyManager::_callStatusUpdate(LSHandle *sh, LSMessage *message, void
     pbnjson::JValue lines = msg.get()["lines"];
     if (!lines.isArray())
     {
-        replySuccess(sh, message);
+        replyInvalid(sh, message, "lines must be an array");
         return true;
     }
 
@@ -3121,12 +3120,11 @@ bool PalmLegacyManager::_enableScenario(LSHandle *sh, LSMessage *message, void *
 {
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
     LegacyCategory *cat = categoryFor(message);
-    LSMessageJsonParser msg(message, SCHEMA_1(REQUIRED(scenario, string)));
+    LSMessageJsonParser msg(message, LegacyRequest::SCENARIO);
     if (!msg.parse(__FUNCTION__, sh))
         return true;
 
-    std::string scenario;
-    msg.get("scenario", scenario);
+    const std::string scenario = LegacyRequest::string(msg.get(), "scenario").value_or(std::string());
 
     EPhoneRoute route = ePhoneRoute_Earpiece;
     CLSError lserror;
@@ -3149,12 +3147,11 @@ bool PalmLegacyManager::_disableScenario(LSHandle *sh, LSMessage *message, void 
 {
     PalmLegacyManager *self = getPalmLegacyManagerInstance();
     LegacyCategory *cat = categoryFor(message);
-    LSMessageJsonParser msg(message, SCHEMA_1(REQUIRED(scenario, string)));
+    LSMessageJsonParser msg(message, LegacyRequest::SCENARIO);
     if (!msg.parse(__FUNCTION__, sh))
         return true;
 
-    std::string scenario;
-    msg.get("scenario", scenario);
+    const std::string scenario = LegacyRequest::string(msg.get(), "scenario").value_or(std::string());
 
     EPhoneRoute route = ePhoneRoute_Earpiece;
     CLSError lserror;
