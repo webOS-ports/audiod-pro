@@ -90,6 +90,11 @@ TEST(LegacyRequest, CallStatusUpdateNeedsLines)
                    CALL_STATUS));
 }
 
+TEST(LegacyRequest, TheKeysOfADialpadStayOutOfTheLog)
+{
+    EXPECT_EQ(PLAY_DTMF_LOG, eLogOption_DontLogMessage);
+}
+
 TEST(LegacyRequest, PlayDtmfTakesIdOrName)
 {
     // the QML Phone app: name, feedbackOnly in a call
