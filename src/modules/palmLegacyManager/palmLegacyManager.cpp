@@ -19,6 +19,9 @@
 #include <unistd.h>
 #include <strings.h>
 
+#include <initializer_list>
+#include <utility>
+
 #include "palmLegacyManager.h"
 #include "settingsRequest.h"
 #include "legacyRequest.h"
@@ -98,6 +101,7 @@ PalmLegacyManager::PalmLegacyManager(ModuleConfig* const pConfObj) :
     mUsbAudioSink(""),
     mHfpAgent(nullptr),
     mHeadsetTakesCall(true),
+    mAlertsOnSpeaker(false),
     mResumeMediaAfterCall(false),
     mMediaGeneration(0),
     mResumeMediaTimer(0),
@@ -2366,12 +2370,18 @@ pbnjson::JValue PalmLegacyManager::settingsReply() const
     pbnjson::JValue reply = pbnjson::Object();
     reply.put("returnValue", true);
     reply.put(SETTING_HEADSET_TAKES_CALL, mHeadsetTakesCall.value());
+    reply.put(SETTING_ALERTS_ON_SPEAKER, mAlertsOnSpeaker.value());
     return reply;
 }
 
 void PalmLegacyManager::applySettings()
 {
     mBtCall.setTakesCallOnConnect(mHeadsetTakesCall.value());
+    if (mBtRing.alertsOnSpeaker() != mAlertsOnSpeaker.value())
+    {
+        mBtRing.setAlertsOnSpeaker(mAlertsOnSpeaker.value());
+        syncUsbRing();
+    }
     postCategoryStatus(KEY_ROOT_SETTINGS, settingsReply());
 }
 
@@ -2381,6 +2391,7 @@ void PalmLegacyManager::readStoredSettings()
     LSHandle *sh = GetPalmService();
     pbnjson::JValue keys = pbnjson::Array();
     keys.append(SETTING_HEADSET_TAKES_CALL);
+    keys.append(SETTING_ALERTS_ON_SPEAKER);
     pbnjson::JValue payload = pbnjson::Object();
     payload.put("category", SETTINGS_CATEGORY);
     payload.put("keys", keys);
@@ -2403,25 +2414,38 @@ bool PalmLegacyManager::_storedSettingsCb(LSHandle *, LSMessage *reply, void *ct
     /* A key never stored comes back missing (or the call fails): the
      * default stays. */
     pbnjson::JValue obj = pbnjson::JDomParser::fromString(payload);
-    bool takes = true;
-    if (obj.isObject() && obj["settings"].isObject() &&
-        obj["settings"][SETTING_HEADSET_TAKES_CALL].isBoolean() &&
-        obj["settings"][SETTING_HEADSET_TAKES_CALL].asBool(takes) == CONV_OK)
+    if (!obj.isObject() || !obj["settings"].isObject())
+        return true;
+    const pbnjson::JValue settings = obj["settings"];
+    bool changed = false;
+    for (auto [key, setting] : {std::pair{SETTING_HEADSET_TAKES_CALL, &self->mHeadsetTakesCall},
+                                std::pair{SETTING_ALERTS_ON_SPEAKER, &self->mAlertsOnSpeaker}})
     {
-        PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
-            "Stored setting %s: %d", SETTING_HEADSET_TAKES_CALL, (int) takes);
-        if (self->mHeadsetTakesCall.stored(takes))
-            self->applySettings();
+        bool value = false;
+        if (settings[key].isBoolean() && settings[key].asBool(value) == CONV_OK)
+        {
+            PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+                "Stored setting %s: %d", key, (int) value);
+            if (setting->stored(value))
+                changed = true;
+        }
     }
+    if (changed)
+        self->applySettings();
     return true;
 }
 
-void PalmLegacyManager::storeSettings()
+void PalmLegacyManager::storeSettings(const SettingsRequest::Change &change)
 {
     CLSError lserror;
     LSHandle *sh = GetPalmService();
+    /* Only what the request set: the other may not have been read back yet,
+     * and its default would overwrite what is stored. */
     pbnjson::JValue settings = pbnjson::Object();
-    settings.put(SETTING_HEADSET_TAKES_CALL, mHeadsetTakesCall.value());
+    if (change.headsetTakesCall)
+        settings.put(SETTING_HEADSET_TAKES_CALL, mHeadsetTakesCall.value());
+    if (change.alertsOnSpeaker)
+        settings.put(SETTING_ALERTS_ON_SPEAKER, mAlertsOnSpeaker.value());
     pbnjson::JValue payload = pbnjson::Object();
     payload.put("category", SETTINGS_CATEGORY);
     payload.put("settings", settings);
@@ -2460,24 +2484,36 @@ bool PalmLegacyManager::_setSettings(LSHandle *sh, LSMessage *message, void * /*
         return true;
 
     /* Refused, not a default applied: '{}' turned the setting off. */
-    const std::optional<bool> takes = SettingsRequest::headsetTakesCall(msg.get());
-    if (!takes)
+    const std::optional<SettingsRequest::Change> change = SettingsRequest::change(msg.get());
+    if (!change)
     {
         CLSError lserror;
         if (!LSMessageReply(sh, message, STANDARD_JSON_ERROR(AUDIOD_ERRORCODE_INVALID_PARAMS,
-                "bluetoothHeadsetTakesCall must be true or false"), &lserror))
+                "bluetoothHeadsetTakesCall or bluetoothAlertsOnSpeaker must be true or false"), &lserror))
             lserror.Print(__FUNCTION__, __LINE__);
         return true;
     }
 
     if (self)
     {
-        PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
-            "Setting %s: %d", SETTING_HEADSET_TAKES_CALL, (int) *takes);
-        const bool changed = self->mHeadsetTakesCall.set(*takes);
+        bool changed = false;
+        if (change->headsetTakesCall)
+        {
+            PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+                "Setting %s: %d", SETTING_HEADSET_TAKES_CALL, (int) *change->headsetTakesCall);
+            if (self->mHeadsetTakesCall.set(*change->headsetTakesCall))
+                changed = true;
+        }
+        if (change->alertsOnSpeaker)
+        {
+            PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+                "Setting %s: %d", SETTING_ALERTS_ON_SPEAKER, (int) *change->alertsOnSpeaker);
+            if (self->mAlertsOnSpeaker.set(*change->alertsOnSpeaker))
+                changed = true;
+        }
         /* Stored also when unchanged: the stored value may still be the
          * default's absence, or older than what the user sees. */
-        self->storeSettings();
+        self->storeSettings(*change);
         if (changed)
             self->applySettings();
     }

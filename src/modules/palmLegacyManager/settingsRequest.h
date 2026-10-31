@@ -23,25 +23,46 @@
 
 /*
  * What a setSettings request asks for (org.webosports.service.audio and
- * com.palm.audio). The key is also what getSettings answers with and what
- * settingsservice keeps it under, as sound/bluetoothHeadsetTakesCall.
+ * com.palm.audio). The keys are also what getSettings answers with and what
+ * settingsservice keeps them under, as sound/bluetoothHeadsetTakesCall and
+ * sound/bluetoothAlertsOnSpeaker.
  */
 #define SETTING_HEADSET_TAKES_CALL "bluetoothHeadsetTakesCall"
+#define SETTING_ALERTS_ON_SPEAKER "bluetoothAlertsOnSpeaker"
 
 namespace SettingsRequest
 {
-    //! setSettings' schema: bluetoothHeadsetTakesCall, a boolean, which
-    //! must be there; $activity is allowed, nothing else is.
+    //! setSettings' schema: bluetoothHeadsetTakesCall and
+    //! bluetoothAlertsOnSpeaker, booleans, at least one of them there;
+    //! $activity is allowed, nothing else is.
     extern const char *const SET_SCHEMA;
+
+    //! The settings a request changes; the ones it leaves are none.
+    struct Change
+    {
+        std::optional<bool> headsetTakesCall;
+        std::optional<bool> alertsOnSpeaker;
+
+        bool operator==(const Change &o) const
+        {
+            return headsetTakesCall == o.headsetTakesCall && alertsOnSpeaker == o.alertsOnSpeaker;
+        }
+    };
 
     //! The value a payload asks bluetoothHeadsetTakesCall to be, or none
     //! if it holds no boolean bluetoothHeadsetTakesCall: never a default
     //! in its place.
     std::optional<bool> headsetTakesCall(const pbnjson::JValue &payload);
+    //! The same for bluetoothAlertsOnSpeaker.
+    std::optional<bool> alertsOnSpeaker(const pbnjson::JValue &payload);
+
+    //! What a payload asks to change: none if it changes nothing, or holds
+    //! one of the keys as anything but a boolean.
+    std::optional<Change> change(const pbnjson::JValue &payload);
 
     //! A payload checked against SET_SCHEMA the way LSMessageJsonParser
-    //! checks it, then headsetTakesCall(); none if either refuses it.
-    std::optional<bool> parseSet(const char *payload);
+    //! checks it, then change(); none if either refuses it.
+    std::optional<Change> parseSet(const char *payload);
 }
 
 #endif
