@@ -117,6 +117,21 @@ TEST(A2dpRestore, SecondDropIsNotUndone)
     EXPECT_TRUE(restore.due().empty());
 }
 
+// A drop reported twice for one going (bluetooth2 repeating itself, the
+// attempt done meanwhile) is undone once: the first report takes the
+// headset off the list of those PulseAudio's going took.
+TEST(A2dpRestore, DropReportedTwiceIsUndoneOnce)
+{
+    A2dpRestore restore;
+    restore.pulseGone({{kHeadset, kAdapter}}, 1000);
+    EXPECT_TRUE(restore.a2dpGone(kHeadset, 1500));
+    restore.pulseBack();
+    ASSERT_EQ(restore.due().size(), 1u);
+    restore.done(kHeadset);
+    EXPECT_FALSE(restore.a2dpGone(kHeadset, 1800));
+    EXPECT_FALSE(restore.pending());
+}
+
 // A headset that has A2DP again by itself needs no attempt.
 TEST(A2dpRestore, HeadsetBackByItselfIsLeftAlone)
 {
