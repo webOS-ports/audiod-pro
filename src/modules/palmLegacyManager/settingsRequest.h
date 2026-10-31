@@ -29,6 +29,10 @@
  */
 #define SETTING_HEADSET_TAKES_CALL "bluetoothHeadsetTakesCall"
 #define SETTING_ALERTS_ON_SPEAKER "bluetoothAlertsOnSpeaker"
+/* The ringtone volume and mute, com.palm.audio/ringtone's: the volume of the
+ * pringtones stream, kept as sound/ringtoneVolume and sound/ringtoneMuted. */
+#define SETTING_RINGTONE_VOLUME "ringtoneVolume"
+#define SETTING_RINGTONE_MUTED "ringtoneMuted"
 
 namespace SettingsRequest
 {
@@ -59,6 +63,13 @@ namespace SettingsRequest
     //! What a payload asks to change: none if it changes nothing, or holds
     //! one of the keys as anything but a boolean.
     std::optional<Change> change(const pbnjson::JValue &payload);
+
+    //! A stored ringtone volume: an integer from 0 to 100, the range of
+    //! com.palm.audio's setVolume and of Settings' "Ringtone Volume"
+    //! slider; none for anything else, never a default in its place.
+    std::optional<int> storedVolume(const pbnjson::JValue &value);
+    //! A stored ringtone mute: a boolean, or none.
+    std::optional<bool> storedFlag(const pbnjson::JValue &value);
 
     //! A payload checked against SET_SCHEMA the way LSMessageJsonParser
     //! checks it, then change(); none if either refuses it.
