@@ -144,11 +144,11 @@ class PalmLegacyManager : public ModuleInterface, private HfpAgent::Listener
         ECallMode mCallMode;
         ECallMode mAppliedCallMode;
         EPhoneRoute mAppliedRoute;
-        bool mAppliedRing;
+        bool mAppliedRing;      //!< speakerWanted() as last applied
         /* Who has reported which calls; mCallMode follows from it. */
         CallState mCallState;
-        /* Whether a ringtone or alarm is playing: with headphones in, it
-         * rings on the loudspeaker as well. */
+        /* Whether a ringtone, an alarm or an alert is playing, and music:
+         * with headphones in, they ring on the loudspeaker as well. */
         RingState mRingState;
         /* Whether a video call has put itself on the loudspeaker. */
         VideoSpeaker mVideoSpeaker;
@@ -283,7 +283,7 @@ class PalmLegacyManager : public ModuleInterface, private HfpAgent::Listener
             PalmLegacyManager *self;
             ECallMode mode;
             EPhoneRoute route;
-            bool ring;
+            bool ring;      //!< RingState::speakerWanted(): the jack gets the loudspeaker too
             int refs;
         };
 
