@@ -31,7 +31,7 @@
 # hands-free headset (btCall) and whether one connecting during a call
 # takes it (headsetTakesCall) and what a request to change that asks for
 # (settingsRequest), what the Palm-era methods' payloads must hold
-# (legacyRequest), oFono's hands-free audio agent against a
+# (legacyRequest), the in-call volume per route (callVolume), oFono's hands-free audio agent against a
 # private bus (hfpAgent), stream classes the router sends elsewhere than
 # the rest while an output is in use (classRoute), and the sink a USB
 # headset rings on together with the loudspeaker (usbRing), and the ringtones
@@ -62,6 +62,7 @@ add_executable(audiod-tests
     ${CMAKE_SOURCE_DIR}/src/modules/audioRouter/classRoute.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/settingsRequest.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/legacyRequest.cpp
+    ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/callVolume.cpp
     test_btstate.cpp
     test_a2dprestore.cpp
     test_callstate.cpp
@@ -84,7 +85,8 @@ add_executable(audiod-tests
     test_btring.cpp
     test_headsettakescall.cpp
     test_settingsrequest.cpp
-    test_legacyrequest.cpp)
+    test_legacyrequest.cpp
+    test_callvolume.cpp)
 target_include_directories(audiod-tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src/modules/bluetoothManager
     ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager

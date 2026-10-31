@@ -151,3 +151,27 @@ TEST(VolumeTarget, KnowsTheUsbOutputs)
     EXPECT_FALSE(VolumeTarget::isUsbOutput("bluetooth_speaker0"));
     EXPECT_FALSE(VolumeTarget::isUsbOutput(""));
 }
+
+// The headset going (12:46:11 on the Mindphone): the shell had been told
+// bluetooth_speaker0 at 50 and was never told again, so its next key press
+// asked for 40 on the headset, which went to pcm_output and took the
+// phone's volume from 60 to 40.
+TEST(VolumeTarget, TheHeadsetGoingIsTold)
+{
+    EXPECT_TRUE(VolumeTarget::reportMoved("bluetooth_speaker0",
+                                          VolumeTarget::reported("pcm_output", false)));
+    EXPECT_TRUE(VolumeTarget::reportMoved("pcm_output",
+                                          VolumeTarget::reported("pcm_output", true)));
+    EXPECT_TRUE(VolumeTarget::reportMoved("usb_speaker0", "pcm_output"));
+}
+
+TEST(VolumeTarget, NothingMovedIsNotTold)
+{
+    EXPECT_FALSE(VolumeTarget::reportMoved("pcm_output", "pcm_output"));
+    // The headset still carries the audio while this side already heard
+    // pcm_output became active: told once the legacy manager has it too.
+    EXPECT_FALSE(VolumeTarget::reportMoved("bluetooth_speaker0",
+                                           VolumeTarget::reported("pcm_output", true)));
+    // Nobody was told anything yet: nothing to correct.
+    EXPECT_FALSE(VolumeTarget::reportMoved("", "pcm_output"));
+}

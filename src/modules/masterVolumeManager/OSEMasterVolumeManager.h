@@ -174,6 +174,14 @@ class OSEMasterVolumeManager : public MasterVolumeInterface
         //! about it if it missed the headset.
         bool syncBluetoothAudio();
         std::string volumeTargetOf(const std::string &soundOutput);
+        //! An output became active or inactive: once the change has gone
+        //! round (the legacy manager hears of a headset going after this
+        //! side does), getVolume's subscribers are told the output the
+        //! volume is on now if it is not the one they were told last.
+        void checkReportedOutput();
+        static gboolean checkReportedOutputCb(gpointer data);
+        std::string mLastReportedOutput;
+        guint mReportCheckIdle = 0;
 
         void setVolume(LSHandle *lshandle, LSMessage *message, void *ctx);
         void setMicVolume(LSHandle *lshandle, LSMessage *message, void *ctx);

@@ -55,6 +55,11 @@ std::string VolumeTarget::output(const std::string &requested, const std::string
     return requested;
 }
 
+bool VolumeTarget::reportMoved(const std::string &last, const std::string &now)
+{
+    return !last.empty() && last != now;
+}
+
 std::string VolumeTarget::reported(const std::string &active, bool bluetoothAudio)
 {
     if (bluetoothAudio)
