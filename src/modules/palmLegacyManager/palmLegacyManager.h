@@ -218,6 +218,11 @@ class PalmLegacyManager : public ModuleInterface, private HfpAgent::Listener
          * when the call it was for has already ended. */
         bool mResumeMediaAfterCall;
         unsigned int mMediaGeneration;
+        /* The resume after a call on a Bluetooth headset's link, put off
+         * until the link is down (CallState::resumeAfterCall). */
+        guint mResumeMediaTimer;
+        static gboolean resumeMediaCb(gpointer userdata);
+        void cancelResumeMedia();
 
         static LegacyCategory sCategories[];
 
@@ -328,7 +333,7 @@ class PalmLegacyManager : public ModuleInterface, private HfpAgent::Listener
         /* Pause whatever is playing through com.webos.service.mediacontroller,
          * and, for a call, play it again once the call is over. */
         void pauseMedia(bool resumeAfterCall);
-        void resumeMedia();
+        void resumeMedia(bool onHeadsetLink);
         void sendMediaKey(const char *keyEvent);
         static bool _mediaSessionsCb(LSHandle *sh, LSMessage *reply, void *ctx);
         static bool _mediaPlayStatusCb(LSHandle *sh, LSMessage *reply, void *ctx);
