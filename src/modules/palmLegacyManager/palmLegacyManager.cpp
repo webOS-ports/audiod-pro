@@ -3693,7 +3693,7 @@ bool PalmLegacyManager::_playDTMF(LSHandle *sh, LSMessage *message, void *ctx)
      * QML Phone app {"name":"5"} (with "feedbackOnly":true in a call); the
      * other two decide whether the tone also has to reach the far end. */
     LSMessageJsonParser msg(message, LegacyRequest::PLAY_DTMF);
-    if (!msg.parse(__FUNCTION__, sh))
+    if (!msg.parse(__FUNCTION__, sh, LegacyRequest::PLAY_DTMF_LOG))
         return true;
 
     /* Without id or name there is nothing to play: '{}' sent the network an

@@ -23,6 +23,8 @@
 
 #include <pbnjson.hpp>
 
+#include "messageUtils.h"
+
 /*
  * The payloads the com.palm.audio / org.webosports.service.audio methods
  * take, and reading them. SCHEMA_n(REQUIRED(x, type)) only declares x: it
@@ -47,6 +49,11 @@ namespace LegacyRequest
     //! dtmf/playDTMF: id (enyo's dialpad) or name (the QML Phone app);
     //! oneshot, feedbackOnly.
     extern const char *const PLAY_DTMF;
+    //! Whether playDTMF's payload goes in the log: it does not. The keys of a
+    //! dialpad are phone numbers, and in a call the PINs of voicemail and bank
+    //! menus. As PulseAudioLink, which hides a dtmf_ sample's name for the
+    //! same reason.
+    constexpr ELogOption PLAY_DTMF_LOG = eLogOption_DontLogMessage;
     //! playFeedback: name; sink, play, override, type.
     extern const char *const PLAY_FEEDBACK;
     //! state/setRingerSwitch: ringtone, a boolean.
