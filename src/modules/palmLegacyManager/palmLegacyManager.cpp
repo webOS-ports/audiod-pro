@@ -3183,13 +3183,17 @@ bool PalmLegacyManager::_offsetVolume(LSHandle *sh, LSMessage *message, void *ct
     const int offset = *requested;
 
     /* The volume keys during a call: a level up or down on the call's
-     * route. At the end of the range nothing changes and nothing is told,
-     * as with legacy webOS's maxVolume/minVolume. */
+     * route. At the end of the range nothing changes, but it is told all
+     * the same, so the overlay shows the key pressed against a full or an
+     * empty bar. */
     if (self && cat && cat == categoryByName("/phone"))
     {
         const CallVolume::Route route = self->callVolumeRoute();
         if (self->mCallVolume.offset(route, offset))
             self->callVolumeChanged(route);
+        else
+            self->postCategoryStatus(std::string(cat->category) + "/status",
+                                     self->categoryStatus(cat, "changed", true));
         pbnjson::JValue reply = pbnjson::Object();
         reply.put("returnValue", true);
         reply.put("volume", self->mCallVolume.volume(route));
