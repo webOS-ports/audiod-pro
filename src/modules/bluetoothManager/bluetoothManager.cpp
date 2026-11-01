@@ -404,9 +404,16 @@ void BluetoothManager::btA2DPSourceGetStatus(LSMessage *message)
         std::string a2dpDeviceAddress;
         std::string adapterAddress;
         bool connected = false;
-        msg.get("connected", connected);
         msg.get("address", a2dpDeviceAddress);
         msg.get("adapterAddress", adapterAddress);
+        /* A reply without "connected" says nothing about the link: asBool()
+         * would have read it as false and taken the A2DP source down. */
+        if (!msg.get("connected", connected))
+        {
+            PM_LOG_ERROR(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
+                "%s : a2dp status without connected, ignored", __FUNCTION__);
+            return;
+        }
         PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
             "Device MAC address %s Connection Status %d adapter address %s", a2dpDeviceAddress.c_str(), connected, adapterAddress.c_str());
         setBluetoothA2DPSource(connected);

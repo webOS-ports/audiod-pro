@@ -118,3 +118,36 @@ TEST(VolumeTarget, GetVolumeReportsThePhonesOwnWhenNothingIsActive)
 {
     EXPECT_EQ(VolumeTarget::reported("", false), "pcm_output");
 }
+
+TEST(VolumeTarget, ThePhonesOwnOutputMeansTheUsbHeadsetWhenItCarriesTheAudio)
+{
+    // The shell names pcm_output; with a USB headset playing, setting
+    // pcm_output changed nothing anyone could hear.
+    EXPECT_EQ(VolumeTarget::output("pcm_output", "usb_speaker0", true, false), "usb_speaker0");
+    EXPECT_EQ(VolumeTarget::output("pcm_output", "usb_speaker1", true, false), "usb_speaker1");
+    // A Bluetooth headset carrying the audio still wins.
+    EXPECT_EQ(VolumeTarget::output("pcm_output", "usb_speaker0", true, true), "bluetooth_speaker0");
+}
+
+TEST(VolumeTarget, TheUsbHeadsetNamedWhileConnectedIsTheUsbHeadset)
+{
+    EXPECT_EQ(VolumeTarget::output("usb_speaker0", "usb_speaker0", true, false), "usb_speaker0");
+    EXPECT_EQ(VolumeTarget::output("usb_speaker0", "pcm_output", true, false), "usb_speaker0");
+}
+
+TEST(VolumeTarget, TheUsbHeadsetNamedAfterItWentIsTheActiveOutput)
+{
+    EXPECT_EQ(VolumeTarget::output("usb_speaker0", "pcm_output", false, false), "pcm_output");
+    EXPECT_EQ(VolumeTarget::output("usb_speaker0", "", false, false), "pcm_output");
+    EXPECT_EQ(VolumeTarget::output("usb_speaker0", "", false, true), "bluetooth_speaker0");
+}
+
+TEST(VolumeTarget, KnowsTheUsbOutputs)
+{
+    EXPECT_TRUE(VolumeTarget::isUsbOutput("usb_speaker0"));
+    EXPECT_TRUE(VolumeTarget::isUsbOutput("usb_speaker1"));
+    EXPECT_FALSE(VolumeTarget::isUsbOutput("usb_mic0"));
+    EXPECT_FALSE(VolumeTarget::isUsbOutput("pcm_output"));
+    EXPECT_FALSE(VolumeTarget::isUsbOutput("bluetooth_speaker0"));
+    EXPECT_FALSE(VolumeTarget::isUsbOutput(""));
+}
