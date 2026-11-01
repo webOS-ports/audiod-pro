@@ -43,6 +43,8 @@
 #include "hfpAgent.h"
 #include "callVolume.h"
 #include "voiceVolumeStream.h"
+#include "suspendVoter.h"
+#include "paStreamQuery.h"
 
 /*
  * palmLegacyManager -- serves the Palm-era com.palm.audio API on top of audiod.
@@ -82,7 +84,8 @@
  * the two legacy names need their own handles, registered here.
  */
 
-class PalmLegacyManager : public ModuleInterface, private HfpAgent::Listener
+class PalmLegacyManager : public ModuleInterface, private HfpAgent::Listener,
+                          private SuspendVoter::Host
 {
     public:
         /* Where audio should come out for a routable category. Named after the
@@ -291,6 +294,39 @@ class PalmLegacyManager : public ModuleInterface, private HfpAgent::Listener
          * is followed by opening a new one once mPaReconnectTimer fires. */
         PaReconnect mPaReconnect;
         guint mPaReconnectTimer;
+
+        /* Answering sleepd's suspendRequest and prepareSuspend: see
+         * suspendVoter.h. */
+        SuspendVoter mSuspendVoter;
+        PaStreamQuery mVoteQuery;
+        void *mSleepdWatch;
+        LSMessageToken mSleepdIdentify;
+        struct VoteTimer
+        {
+            PalmLegacyManager *self;
+            SuspendVoter::Timer timer;
+            guint source;
+        };
+        std::array<VoteTimer, static_cast<size_t>(SuspendVoter::Timer::Count)> mVoteTimers;
+        void startSuspendVote();
+        void stopSuspendVote();
+        void cancelIdentify();
+        static bool _sleepdStatusCb(LSHandle *sh, const char *service, bool connected, void *ctx);
+        static bool _sleepdIdentifyCb(LSHandle *sh, LSMessage *reply, void *ctx);
+        static bool _sleepdSignalCb(LSHandle *sh, LSMessage *message, void *ctx);
+        static gboolean voteTimerCb(gpointer data);
+        static void paHoldCb(pa_context *c, int success, void *userdata);
+        /* SuspendVoter::Host; not marked override, as with HfpAgent::Listener. */
+        void identify();
+        void call(const char *method, const std::string &payload);
+        bool queryStreams();
+        void cancelQuery();
+        void holdAudio(bool hold);
+        bool inCall() const;
+        uint64_t nowMs() const;
+        void startTimer(SuspendVoter::Timer timer, unsigned ms);
+        void stopTimer(SuspendVoter::Timer timer);
+        void log(bool warning, const std::string &message);
 
         /* One in-flight routing request. Heap-allocated because the PulseAudio
          * card/sink/source walk is a chain of async callbacks. mPendingCards
