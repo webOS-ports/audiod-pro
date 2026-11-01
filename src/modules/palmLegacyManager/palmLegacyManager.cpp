@@ -408,6 +408,11 @@ void PalmLegacyManager::applyHac()
 
 int PalmLegacyManager::categoryVolume(const LegacyCategory *cat) const
 {
+    /* /phone's volume is the call's, the one of the route the call is on,
+     * or would be on if one came in now. */
+    if (cat && cat == categoryByName("/phone"))
+        return mCallVolume.volume(callVolumeRoute());
+
     AudioPolicyManager *policy = AudioPolicyManager::getAudioPolicyManagerInstance();
     if (!cat || !cat->streamType || !policy)
         return 0;
@@ -574,6 +579,13 @@ void PalmLegacyManager::deInitialize()
         g_source_remove(mStoreRingtoneTimer);
         mStoreRingtoneTimer = 0;
         writeRingtoneVolume();
+    }
+    /* So is a call volume. */
+    if (mStoreCallVolumeTimer)
+    {
+        g_source_remove(mStoreCallVolumeTimer);
+        mStoreCallVolumeTimer = 0;
+        writeCallVolume();
     }
     if (mPaReconnectTimer)
     {
@@ -808,6 +820,8 @@ void PalmLegacyManager::dropPaContext()
      * schedule yet another connection. */
     pa_context_set_state_callback(mPaContext, nullptr, nullptr);
     pa_context_set_subscribe_callback(mPaContext, nullptr, nullptr);
+    /* Its stream goes with it; the next context's routing opens another. */
+    mVoiceStream.drop();
     pa_context_disconnect(mPaContext);
     pa_context_unref(mPaContext);
     mPaContext = nullptr;
@@ -919,6 +933,7 @@ void PalmLegacyManager::paContextStateCb(pa_context *c, void *userdata)
             self->mPaReady = false;
             self->mAppliedCallMode = eCallMode_None;
             self->mRingState.clear();
+            self->mVoiceStream.drop();
             /* The combined sink went with PulseAudio: the router must not
              * send the ringtones to it once PulseAudio is back. */
             self->mUsbRing.paGone();
@@ -1132,6 +1147,12 @@ void PalmLegacyManager::paSinkInfoCb(pa_context *c, const pa_sink_info *info, in
     if (!earpiece && !speaker)
         return;
 
+    /* The card's primary output is the one its voice volume is taken from
+     * (see voiceVolumeStream.h). */
+    const char *primary = pa_proplist_gets(info->proplist, "droid.output.primary");
+    if (primary && 0 == strcmp(primary, "true") && info->name)
+        req->self->mVoiceSink = info->name;
+
     /* The route decides, not port availability by itself: on a device without
      * jack detection every port claims to be available, and an earpiece call
      * must not go out an empty jack. effectiveRoute() only asks for the jack
@@ -1207,8 +1228,12 @@ void PalmLegacyManager::paSourceInfoCb(pa_context *c, const pa_source_info *info
 
     if (eol)
     {
-        /* End of this chain. */
+        /* End of this chain: the call is where it goes now, and its volume
+         * is that route's. */
+        PalmLegacyManager *self = req->self;
         routingUnref(req);
+        if (self)
+            self->applyCallVolume();
         return;
     }
 
@@ -2285,6 +2310,151 @@ void PalmLegacyManager::applyCallStatus()
 }
 
 /* ------------------------------------------------------------------------- *
+ * The in-call volume
+ * ------------------------------------------------------------------------- */
+
+/* The route whose volume the call is heard at: the one it is on, or with
+ * no call the one a call would take now. */
+CallVolume::Route PalmLegacyManager::callVolumeRouteOf(EPhoneRoute route)
+{
+    switch (route)
+    {
+        case ePhoneRoute_Speaker:       return CallVolume::Route::Speaker;
+        case ePhoneRoute_Headset:
+        case ePhoneRoute_HeadsetMic:    return CallVolume::Route::Wired;
+        case ePhoneRoute_BluetoothSCO:  return CallVolume::Route::Bluetooth;
+        case ePhoneRoute_Earpiece:
+        default:                        return CallVolume::Route::Earpiece;
+    }
+}
+
+CallVolume::Route PalmLegacyManager::callVolumeRoute() const
+{
+    return callVolumeRouteOf((mCallMode != eCallMode_None) ? mAppliedRoute : effectiveRoute());
+}
+
+/* The call volume onto the call: for a carrier call the HAL's voice volume
+ * through mVoiceStream, for a VoIP call the volume of its voipcall stream,
+ * which is the /phone category's. With no call the stream is closed; the
+ * HAL keeps the last voice volume until the next call sets its own. */
+void PalmLegacyManager::applyCallVolume()
+{
+    const CallVolume::Route route = callVolumeRoute();
+    const int volume = mCallVolume.volume(route);
+
+    if (mCallMode == eCallMode_Carrier)
+    {
+        if (!mPaReady || !mPaContext || mVoiceSink.empty())
+        {
+            PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+                "applyCallVolume: no voice sink yet, the call stays at the HAL's volume");
+            return;
+        }
+        const double linear = CallVolume::halVoiceVolume(volume);
+        const bool opening = !mVoiceStream.open();
+        if (mVoiceStream.apply(mPaContext, mVoiceSink, linear))
+            PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+                "Call volume %s %d (voice volume %.2f on %s)%s", CallVolume::name(route), volume,
+                linear, mVoiceSink.c_str(), opening ? ", stream opened" : "");
+        else
+            PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+                "Could not open the call volume stream on %s", mVoiceSink.c_str());
+        return;
+    }
+
+    if (mVoiceStream.open())
+    {
+        PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT, "Call volume stream closed");
+        mVoiceStream.drop();
+    }
+
+    if (mCallMode == eCallMode_Voip)
+    {
+        const LegacyCategory *phone = categoryByName("/phone");
+        AudioPolicyManager *policy = AudioPolicyManager::getAudioPolicyManagerInstance();
+        if (phone && phone->streamType && policy &&
+            policy->getStreamVolume(phone->streamType) != volume)
+        {
+            PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+                "Call volume %s %d (%s)", CallVolume::name(route), volume, phone->streamType);
+            policy->setStreamVolume(phone->streamType, volume);
+        }
+    }
+}
+
+/* route's volume was changed by the user: onto the call if it is the
+ * call's, kept, and told to /phone/status with "changed":["volume"], which
+ * is what the shell's volume overlay shows the call volume on. */
+void PalmLegacyManager::callVolumeChanged(CallVolume::Route route)
+{
+    PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+        "Call volume for %s set to %d", CallVolume::name(route), mCallVolume.volume(route));
+    storeCallVolume(route);
+    if (route == callVolumeRoute())
+        applyCallVolume();
+    const LegacyCategory *phone = categoryByName("/phone");
+    if (phone)
+        postCategoryStatus(std::string(phone->category) + "/status",
+                           categoryStatus(phone, "changed", true));
+}
+
+static constexpr guint CALL_VOLUME_STORE_DELAY_MS = 1000;
+
+/* A key held down sends a step after another: what the volume ends on is
+ * stored, CALL_VOLUME_STORE_DELAY_MS after the last one. */
+void PalmLegacyManager::storeCallVolume(CallVolume::Route route)
+{
+    mStoreCallVolume[static_cast<size_t>(route)] = true;
+    if (mStoreCallVolumeTimer)
+        g_source_remove(mStoreCallVolumeTimer);
+    mStoreCallVolumeTimer = g_timeout_add(CALL_VOLUME_STORE_DELAY_MS,
+                                          &PalmLegacyManager::storeCallVolumeCb, this);
+}
+
+gboolean PalmLegacyManager::storeCallVolumeCb(gpointer data)
+{
+    PalmLegacyManager *self = static_cast<PalmLegacyManager*>(data);
+    if (self)
+    {
+        self->mStoreCallVolumeTimer = 0;
+        self->writeCallVolume();
+    }
+    return G_SOURCE_REMOVE;
+}
+
+void PalmLegacyManager::writeCallVolume()
+{
+    /* Only the routes that changed: the others may not have been read back
+     * yet, and their defaults would overwrite what is stored. */
+    pbnjson::JValue settings = pbnjson::Object();
+    bool any = false;
+    for (const CallVolume::Route route : { CallVolume::Route::Earpiece, CallVolume::Route::Speaker,
+                                           CallVolume::Route::Wired, CallVolume::Route::Bluetooth })
+    {
+        bool &pending = mStoreCallVolume[static_cast<size_t>(route)];
+        if (!pending)
+            continue;
+        pending = false;
+        settings.put(CallVolume::settingKey(route), mCallVolume.volume(route));
+        any = true;
+    }
+    if (!any)
+        return;
+
+    CLSError lserror;
+    LSHandle *sh = GetPalmService();
+    pbnjson::JValue payload = pbnjson::Object();
+    payload.put("category", SETTINGS_CATEGORY);
+    payload.put("settings", settings);
+    if (!sh || !LSCall(sh, SETTINGS_SET, payload.stringify().c_str(), nullptr, nullptr, nullptr, &lserror))
+    {
+        lserror.Print(__FUNCTION__, __LINE__);
+        PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+            "Could not store the call volume; it lasts until audiod restarts");
+    }
+}
+
+/* ------------------------------------------------------------------------- *
  * Status payloads and subscriptions
  * ------------------------------------------------------------------------- */
 
@@ -2336,7 +2506,7 @@ pbnjson::JValue PalmLegacyManager::rootStatus() const
  * payload.action and payload.active, and without them its route picker and the
  * in-call proximity handling never update. */
 pbnjson::JValue PalmLegacyManager::categoryStatus(const LegacyCategory *cat,
-                                                  const char *action) const
+                                                  const char *action, bool volumeChanged) const
 {
     pbnjson::JValue reply = pbnjson::Object();
     reply.put("returnValue", true);
@@ -2348,6 +2518,15 @@ pbnjson::JValue PalmLegacyManager::categoryStatus(const LegacyCategory *cat,
 
     reply.put("action", action ? action : "changed");
     reply.put("volume", categoryVolume(cat));
+    /* What the change was, in the shape legacy webOS sent it, which
+     * LunaSysMgr's volume overlay went by: only a volume the user changed,
+     * never a route change or the call starting. */
+    if (volumeChanged)
+    {
+        pbnjson::JValue changed = pbnjson::Array();
+        changed.append("volume");
+        reply.put("changed", changed);
+    }
     reply.put("muted", isPhone ? mPhoneMuted : categoryMuted(cat));
 
     if (routable)
@@ -2445,6 +2624,9 @@ void PalmLegacyManager::readStoredSettings()
     keys.append(SETTING_ALERTS_ON_SPEAKER);
     keys.append(SETTING_RINGTONE_VOLUME);
     keys.append(SETTING_RINGTONE_MUTED);
+    for (const CallVolume::Route route : { CallVolume::Route::Earpiece, CallVolume::Route::Speaker,
+                                           CallVolume::Route::Wired, CallVolume::Route::Bluetooth })
+        keys.append(CallVolume::settingKey(route));
     pbnjson::JValue payload = pbnjson::Object();
     payload.put("category", SETTINGS_CATEGORY);
     payload.put("keys", keys);
@@ -2501,6 +2683,26 @@ bool PalmLegacyManager::_storedSettingsCb(LSHandle *, LSMessage *reply, void *ct
     }
     if (ringtoneChanged)
         self->applyRingtoneVolume();
+
+    bool callVolumeChanged = false;
+    for (const CallVolume::Route route : { CallVolume::Route::Earpiece, CallVolume::Route::Speaker,
+                                           CallVolume::Route::Wired, CallVolume::Route::Bluetooth })
+    {
+        const char *key = CallVolume::settingKey(route);
+        if (const std::optional<int> volume = SettingsRequest::storedVolume(settings[key]))
+        {
+            PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+                "Stored setting %s: %d", key, *volume);
+            callVolumeChanged = self->mCallVolume.stored(route, *volume) || callVolumeChanged;
+        }
+    }
+    if (callVolumeChanged)
+    {
+        /* A call already up when settingsservice came: it goes to its
+         * stored volume now. */
+        self->applyCallVolume();
+        self->notifyCategory(categoryByName("/phone"), "changed");
+    }
     return true;
 }
 
@@ -2906,6 +3108,27 @@ bool PalmLegacyManager::_setVolume(LSHandle *sh, LSMessage *message, void *ctx)
         return true;
     }
 
+    /* The call volume: the route's that the scenario names, or the one
+     * the call is on. Onto the call by callVolumeChanged(), not here. */
+    if (self && cat && cat == categoryByName("/phone"))
+    {
+        CallVolume::Route route = self->callVolumeRoute();
+        if (const std::optional<std::string> scenario = LegacyRequest::string(msg.get(), "scenario"))
+        {
+            EPhoneRoute named;
+            if (!routeFromScenario(cat, *scenario, &named))
+            {
+                replyInvalid(sh, message, "unknown scenario");
+                return true;
+            }
+            route = callVolumeRouteOf(named);
+        }
+        if (self->mCallVolume.set(route, volume))
+            self->callVolumeChanged(route);
+        replySuccess(sh, message);
+        return true;
+    }
+
     AudioPolicyManager *policy = AudioPolicyManager::getAudioPolicyManagerInstance();
     if (!self || !cat || !cat->streamType || !policy ||
         !policy->setStreamVolume(cat->streamType, volume))
@@ -2958,6 +3181,26 @@ bool PalmLegacyManager::_offsetVolume(LSHandle *sh, LSMessage *message, void *ct
         return true;
     }
     const int offset = *requested;
+
+    /* The volume keys during a call: a level up or down on the call's
+     * route. At the end of the range nothing changes, but it is told all
+     * the same, so the overlay shows the key pressed against a full or an
+     * empty bar. */
+    if (self && cat && cat == categoryByName("/phone"))
+    {
+        const CallVolume::Route route = self->callVolumeRoute();
+        if (self->mCallVolume.offset(route, offset))
+            self->callVolumeChanged(route);
+        else
+            self->postCategoryStatus(std::string(cat->category) + "/status",
+                                     self->categoryStatus(cat, "changed", true));
+        pbnjson::JValue reply = pbnjson::Object();
+        reply.put("returnValue", true);
+        reply.put("volume", self->mCallVolume.volume(route));
+        reply.put("scenario", scenarioName(cat, cat->route));
+        replyJson(sh, message, reply);
+        return true;
+    }
 
     AudioPolicyManager *policy = AudioPolicyManager::getAudioPolicyManagerInstance();
     CLSError lserror;
