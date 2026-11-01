@@ -35,6 +35,7 @@
 #include "usbRing.h"
 #include "btRing.h"
 #include "storedSetting.h"
+#include "settingsRequest.h"
 #include "paReconnect.h"
 #include "videoSpeaker.h"
 #include "btCall.h"
@@ -211,8 +212,13 @@ class PalmLegacyManager : public ModuleInterface, private HfpAgent::Listener
          * sound/bluetoothHeadsetTakesCall, the way the master volume keeps
          * sound/soundOutputList (OSEMasterVolumeManager). */
         StoredSetting<bool> mHeadsetTakesCall;
+        /* Whether the alerts and notifications stay on the loudspeaker
+         * with a Bluetooth headset, as the ringtones do: Bluetooth
+         * Settings' "Alerts on phone speaker", sound/bluetoothAlertsOnSpeaker,
+         * off by default (see btRing.h). */
+        StoredSetting<bool> mAlertsOnSpeaker;
         void readStoredSettings();
-        void storeSettings();
+        void storeSettings(const SettingsRequest::Change &change);
         void applySettings();
         pbnjson::JValue settingsReply() const;
         static bool _storedSettingsCb(LSHandle *sh, LSMessage *reply, void *ctx);

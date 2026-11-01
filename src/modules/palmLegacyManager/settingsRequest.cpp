@@ -19,22 +19,47 @@
 #include "messageUtils.h"
 
 /* REQUIRED() in SCHEMA_n() only declares a property: SCHEMA_1(REQUIRED(x,
- * boolean)) let '{}' through. The required list is REQUIRED_n(). */
+ * boolean)) let '{}' through. The required list is REQUIRED_n(); either
+ * setting will do, so one of two such lists. */
 const char *const SettingsRequest::SET_SCHEMA =
-    STRICT_SCHEMA(PROPS_2(PROP(bluetoothHeadsetTakesCall, boolean), SYSTEM_PARAMETERS)
-                  REQUIRED_1(bluetoothHeadsetTakesCall));
+    STRICT_SCHEMA(PROPS_3(PROP(bluetoothHeadsetTakesCall, boolean),
+                          PROP(bluetoothAlertsOnSpeaker, boolean), SYSTEM_PARAMETERS)
+                  ",\"anyOf\":[{\"type\":\"object\"" REQUIRED_1(bluetoothHeadsetTakesCall) "},"
+                               "{\"type\":\"object\"" REQUIRED_1(bluetoothAlertsOnSpeaker) "}]");
 
-std::optional<bool> SettingsRequest::headsetTakesCall(const pbnjson::JValue &payload)
+static std::optional<bool> boolean(const pbnjson::JValue &payload, const char *key)
 {
     /* asBool() writes false into its target before it looks at the value,
      * also for a key that is missing: its result is what tells. */
-    bool takes = false;
-    if (!payload.isObject() || payload[SETTING_HEADSET_TAKES_CALL].asBool(takes) != CONV_OK)
+    bool value = false;
+    if (!payload.isObject() || payload[key].asBool(value) != CONV_OK)
         return std::nullopt;
-    return takes;
+    return value;
 }
 
-std::optional<bool> SettingsRequest::parseSet(const char *payload)
+std::optional<bool> SettingsRequest::headsetTakesCall(const pbnjson::JValue &payload)
+{
+    return boolean(payload, SETTING_HEADSET_TAKES_CALL);
+}
+
+std::optional<bool> SettingsRequest::alertsOnSpeaker(const pbnjson::JValue &payload)
+{
+    return boolean(payload, SETTING_ALERTS_ON_SPEAKER);
+}
+
+std::optional<SettingsRequest::Change> SettingsRequest::change(const pbnjson::JValue &payload)
+{
+    if (!payload.isObject())
+        return std::nullopt;
+    Change c{headsetTakesCall(payload), alertsOnSpeaker(payload)};
+    if ((!c.headsetTakesCall && payload.hasKey(SETTING_HEADSET_TAKES_CALL)) ||
+        (!c.alertsOnSpeaker && payload.hasKey(SETTING_ALERTS_ON_SPEAKER)) ||
+        (!c.headsetTakesCall && !c.alertsOnSpeaker))
+        return std::nullopt;
+    return c;
+}
+
+std::optional<SettingsRequest::Change> SettingsRequest::parseSet(const char *payload)
 {
     if (!payload)
         return std::nullopt;
@@ -42,5 +67,5 @@ std::optional<bool> SettingsRequest::parseSet(const char *payload)
     pbnjson::JDomParser parser;
     if (!parser.parse(payload, schema))
         return std::nullopt;
-    return headsetTakesCall(parser.getDom());
+    return change(parser.getDom());
 }
