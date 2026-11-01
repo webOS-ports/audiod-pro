@@ -100,6 +100,7 @@ PalmLegacyManager::PalmLegacyManager(ModuleConfig* const pConfObj) :
     mHeadsetTakesCall(true),
     mResumeMediaAfterCall(false),
     mMediaGeneration(0),
+    mResumeMediaTimer(0),
     mPaMainloop(nullptr),
     mPaContext(nullptr),
     mPaReady(false),
@@ -559,6 +560,7 @@ void PalmLegacyManager::deInitialize()
     mPalmHandle = nullptr;
     mPortsHandle = nullptr;
 
+    cancelResumeMedia();
     if (mPaReconnectTimer)
     {
         g_source_remove(mPaReconnectTimer);
@@ -2019,18 +2021,59 @@ bool PalmLegacyManager::_mediaPlayStatusCb(LSHandle *sh, LSMessage *reply, void 
     return true;
 }
 
-void PalmLegacyManager::resumeMedia()
+void PalmLegacyManager::resumeMedia(bool onHeadsetLink)
 {
     /* Whatever pause is still in flight belongs to the call that just ended. */
     ++mMediaGeneration;
+    cancelResumeMedia();
 
-    if (!mResumeMediaAfterCall)
-        return;
+    switch (CallState::resumeAfterCall(mResumeMediaAfterCall, onHeadsetLink))
+    {
+        case CallState::Resume::Never:
+            return;
+        case CallState::Resume::Later:
+            /* mResumeMediaAfterCall stays set until then, so a headset going
+             * meanwhile (which clears it) cancels the resume. */
+            PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+                "Resuming the media playback paused for the call in %u ms, "
+                "once the headset's call link is down", CallState::resumeDelayMs);
+            mResumeMediaTimer = g_timeout_add(CallState::resumeDelayMs,
+                                              &PalmLegacyManager::resumeMediaCb, this);
+            return;
+        case CallState::Resume::Now:
+            break;
+    }
+
     mResumeMediaAfterCall = false;
-
     PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
         "Resuming the media playback paused for the call");
     sendMediaKey("play");
+}
+
+gboolean PalmLegacyManager::resumeMediaCb(gpointer userdata)
+{
+    PalmLegacyManager *self = static_cast<PalmLegacyManager*>(userdata);
+    if (!self)
+        return G_SOURCE_REMOVE;
+
+    self->mResumeMediaTimer = 0;
+    if (!CallState::resumeStillDue(self->mResumeMediaAfterCall, self->mCallMode))
+        return G_SOURCE_REMOVE;
+
+    self->mResumeMediaAfterCall = false;
+    PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+        "Resuming the media playback paused for the call");
+    self->sendMediaKey("play");
+    return G_SOURCE_REMOVE;
+}
+
+void PalmLegacyManager::cancelResumeMedia()
+{
+    if (mResumeMediaTimer)
+    {
+        g_source_remove(mResumeMediaTimer);
+        mResumeMediaTimer = 0;
+    }
 }
 
 void PalmLegacyManager::sendMediaKey(const char *keyEvent)
@@ -2166,6 +2209,10 @@ void PalmLegacyManager::applyCallStatus()
         mPhoneMuted = false;
     }
 
+    /* Whether the call was on the headset's link, which the routing below
+     * closes when the last call ends. */
+    const bool onHeadsetLink = (mBtCall.sco() != BtCall::Sco::Down);
+
     /* Deliberately called on the disconnect path too -- see updateCallMode(). */
     updateCallMode();
 
@@ -2175,7 +2222,7 @@ void PalmLegacyManager::applyCallStatus()
     if (change.pauseMedia)
         pauseMedia(true);
     else if (change.resumeMedia)
-        resumeMedia();
+        resumeMedia(onHeadsetLink);
 }
 
 /* ------------------------------------------------------------------------- *
