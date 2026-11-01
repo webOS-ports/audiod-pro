@@ -111,7 +111,19 @@ PalmLegacyManager::PalmLegacyManager(ModuleConfig* const pConfObj) :
     mPaMainloop(nullptr),
     mPaContext(nullptr),
     mPaReady(false),
-    mPaReconnectTimer(0)
+    mPaReconnectTimer(0),
+    mSuspendVoter(*this),
+    mVoteQuery([this](bool ok, const std::vector<SuspendVoter::Stream> &streams) {
+        if (ok)
+            mSuspendVoter.streams(streams);
+        else
+            mSuspendVoter.streamsFailed();
+    }),
+    mSleepdWatch(nullptr),
+    mSleepdIdentify(LSMESSAGE_TOKEN_INVALID),
+    mVoteTimers{{{this, SuspendVoter::Timer::NextSample, 0},
+                 {this, SuspendVoter::Timer::Deadline, 0},
+                 {this, SuspendVoter::Timer::Hold, 0}}}
 {
     if (!mObjAudioMixer)
         PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT, "AudioMixer instance is null");
@@ -540,6 +552,9 @@ void PalmLegacyManager::initialize()
      * caching a number of its own. */
     subscribeMasterVolume();
 
+    /* Say what audio thinks of suspending, as legacy did. */
+    startSuspendVote();
+
     /* The active output device is what master/setVolume has to be addressed
      * at, and audioRouter is the thing that knows it. */
     if (mObjModuleManager)
@@ -592,6 +607,8 @@ void PalmLegacyManager::deInitialize()
         g_source_remove(mPaReconnectTimer);
         mPaReconnectTimer = 0;
     }
+    /* While there is a PulseAudio to let go of the sinks. */
+    stopSuspendVote();
     dropPaContext();
     if (mPaMainloop)
     {
@@ -822,6 +839,8 @@ void PalmLegacyManager::dropPaContext()
     pa_context_set_subscribe_callback(mPaContext, nullptr, nullptr);
     /* Its stream goes with it; the next context's routing opens another. */
     mVoiceStream.drop();
+    mVoteQuery.cancel();
+    mSuspendVoter.paLost();
     pa_context_disconnect(mPaContext);
     pa_context_unref(mPaContext);
     mPaContext = nullptr;
@@ -868,6 +887,7 @@ void PalmLegacyManager::paContextStateCb(pa_context *c, void *userdata)
             self->mPaReconnect.connected();
             PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
                 "Connected to PulseAudio for call routing");
+            self->mSuspendVoter.paReady();
             /* Assert routing for our current state so the hardware matches
              * audiod's view whenever we (re)connect. A restarted PulseAudio
              * comes back with the card on its default profile, so a call in
@@ -934,6 +954,8 @@ void PalmLegacyManager::paContextStateCb(pa_context *c, void *userdata)
             self->mAppliedCallMode = eCallMode_None;
             self->mRingState.clear();
             self->mVoiceStream.drop();
+            self->mVoteQuery.cancel();
+            self->mSuspendVoter.paLost();
             /* The combined sink went with PulseAudio: the router must not
              * send the ringtones to it once PulseAudio is back. */
             self->mUsbRing.paGone();
@@ -945,6 +967,202 @@ void PalmLegacyManager::paContextStateCb(pa_context *c, void *userdata)
         default:
             break;
     }
+}
+
+/* ------------------------------------------------------------------------- *
+ * Voting on suspend: SuspendVoter's bus, PulseAudio and timers
+ * ------------------------------------------------------------------------- */
+
+static const char *const SLEEPD_SERVICE = "com.palm.sleep";
+static const char *const SLEEPD_CATEGORY = "/com/palm/power";
+
+void PalmLegacyManager::startSuspendVote()
+{
+    LSHandle *sh = GetPalmService();
+    if (!sh)
+        return;
+
+    /* The bus keeps these across a restart of sleepd. */
+    for (const char *signal : {"suspendRequest", "prepareSuspend", "resume"})
+    {
+        CLSError lserror;
+        const std::string match = pbnjson::JObject{{"category", SLEEPD_CATEGORY},
+                                                   {"method", signal}}.stringify();
+        if (!LSCall(sh, "luna://com.webos.service.bus/signal/addmatch", match.c_str(),
+                    &PalmLegacyManager::_sleepdSignalCb, this, nullptr, &lserror))
+            lserror.Print(__FUNCTION__, __LINE__);
+    }
+
+    /* Reports sleepd at once if it is up, and again each time it comes back. */
+    CLSError lserror;
+    if (!LSRegisterServerStatusEx(sh, SLEEPD_SERVICE, &PalmLegacyManager::_sleepdStatusCb, this,
+                                  &mSleepdWatch, &lserror))
+        lserror.Print(__FUNCTION__, __LINE__);
+}
+
+void PalmLegacyManager::stopSuspendVote()
+{
+    mSuspendVoter.stop();
+    for (VoteTimer &timer : mVoteTimers)
+        stopTimer(timer.timer);
+
+    LSHandle *sh = GetPalmService();
+    cancelIdentify();
+    if (sh && mSleepdWatch)
+    {
+        CLSError lserror;
+        if (!LSCancelServerStatus(sh, mSleepdWatch, &lserror))
+            lserror.Print(__FUNCTION__, __LINE__);
+    }
+    mSleepdWatch = nullptr;
+}
+
+void PalmLegacyManager::cancelIdentify()
+{
+    LSHandle *sh = GetPalmService();
+    if (sh && mSleepdIdentify != LSMESSAGE_TOKEN_INVALID)
+    {
+        CLSError lserror;
+        if (!LSCallCancel(sh, mSleepdIdentify, &lserror))
+            lserror.Print(__FUNCTION__, __LINE__);
+    }
+    mSleepdIdentify = LSMESSAGE_TOKEN_INVALID;
+}
+
+bool PalmLegacyManager::_sleepdStatusCb(LSHandle *, const char *, bool connected, void *ctx)
+{
+    PalmLegacyManager *self = static_cast<PalmLegacyManager*>(ctx);
+    self->cancelIdentify();
+    if (connected)
+        self->mSuspendVoter.sleepdUp();
+    else
+        self->mSuspendVoter.sleepdDown();
+    return true;
+}
+
+bool PalmLegacyManager::_sleepdIdentifyCb(LSHandle *, LSMessage *reply, void *ctx)
+{
+    PalmLegacyManager *self = static_cast<PalmLegacyManager*>(ctx);
+    /* What an identify cancelled just now still had on its way. */
+    if (LSMessageGetResponseToken(reply) == self->mSleepdIdentify)
+        self->mSuspendVoter.identified(LSMessageGetPayload(reply));
+    return true;
+}
+
+bool PalmLegacyManager::_sleepdSignalCb(LSHandle *, LSMessage *message, void *ctx)
+{
+    PalmLegacyManager *self = static_cast<PalmLegacyManager*>(ctx);
+    const char *category = LSMessageGetCategory(message);
+    const char *method = LSMessageGetMethod(message);
+
+    /* The reply to the addmatch comes here as well. */
+    if (!category || !method || strcmp(category, SLEEPD_CATEGORY) != 0)
+    {
+        const pbnjson::JValue reply = pbnjson::JDomParser::fromString(LSMessageGetPayload(message));
+        if (reply["returnValue"].isBoolean() && !reply["returnValue"].asBool())
+            self->log(true, std::string("Cannot follow sleepd's signals: ") +
+                            LSMessageGetPayload(message));
+        return true;
+    }
+
+    if (strcmp(method, "suspendRequest") == 0)
+        self->mSuspendVoter.suspendRequest();
+    else if (strcmp(method, "prepareSuspend") == 0)
+        self->mSuspendVoter.prepareSuspend();
+    else if (strcmp(method, "resume") == 0)
+        self->mSuspendVoter.resume();
+    return true;
+}
+
+void PalmLegacyManager::identify()
+{
+    LSHandle *sh = GetPalmService();
+    CLSError lserror;
+    const std::string uri = std::string("luna://") + SLEEPD_SERVICE + SLEEPD_CATEGORY + "/identify";
+    /* sleepd forgets a client that drops this subscription: a dead audiod
+     * does not hold up its votes. */
+    if (!sh || !LSCall(sh, uri.c_str(), "{\"subscribe\":true,\"clientName\":\"com.palm.audio\"}",
+                       &PalmLegacyManager::_sleepdIdentifyCb, this, &mSleepdIdentify, &lserror))
+    {
+        mSleepdIdentify = LSMESSAGE_TOKEN_INVALID;
+        lserror.Print(__FUNCTION__, __LINE__);
+    }
+}
+
+void PalmLegacyManager::call(const char *method, const std::string &payload)
+{
+    LSHandle *sh = GetPalmService();
+    CLSError lserror;
+    const std::string uri = std::string("luna://") + SLEEPD_SERVICE + SLEEPD_CATEGORY + "/" + method;
+    if (!sh || !LSCallOneReply(sh, uri.c_str(), payload.c_str(), nullptr, nullptr, nullptr, &lserror))
+        lserror.Print(__FUNCTION__, __LINE__);
+}
+
+bool PalmLegacyManager::queryStreams()
+{
+    return mPaReady && mPaContext && mVoteQuery.start(mPaContext);
+}
+
+void PalmLegacyManager::cancelQuery()
+{
+    mVoteQuery.cancel();
+}
+
+void PalmLegacyManager::paHoldCb(pa_context *, int success, void *userdata)
+{
+    if (!success)
+        static_cast<PalmLegacyManager*>(userdata)->log(
+            true, "PulseAudio refused to suspend, or to resume, the sinks and sources");
+}
+
+void PalmLegacyManager::holdAudio(bool hold)
+{
+    PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT, "%s the sinks and sources for sleepd",
+                hold ? "Suspending" : "Resuming");
+    if (mPaReady && mPaContext &&
+        !PaStreamQuery::hold(mPaContext, hold, &PalmLegacyManager::paHoldCb, this))
+        log(true, "Could not ask PulseAudio to suspend, or to resume, the sinks and sources");
+}
+
+bool PalmLegacyManager::inCall() const
+{
+    return mCallMode != eCallMode_None;
+}
+
+uint64_t PalmLegacyManager::nowMs() const
+{
+    return static_cast<uint64_t>(g_get_monotonic_time()) / 1000;
+}
+
+gboolean PalmLegacyManager::voteTimerCb(gpointer data)
+{
+    VoteTimer *timer = static_cast<VoteTimer*>(data);
+    timer->source = 0;
+    timer->self->mSuspendVoter.timerFired(timer->timer);
+    return G_SOURCE_REMOVE;
+}
+
+void PalmLegacyManager::startTimer(SuspendVoter::Timer timer, unsigned ms)
+{
+    stopTimer(timer);
+    VoteTimer &t = mVoteTimers[static_cast<size_t>(timer)];
+    t.source = g_timeout_add(ms, &PalmLegacyManager::voteTimerCb, &t);
+}
+
+void PalmLegacyManager::stopTimer(SuspendVoter::Timer timer)
+{
+    VoteTimer &t = mVoteTimers[static_cast<size_t>(timer)];
+    if (t.source)
+        g_source_remove(t.source);
+    t.source = 0;
+}
+
+void PalmLegacyManager::log(bool warning, const std::string &message)
+{
+    if (warning)
+        PM_LOG_WARNING(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT, "%s", message.c_str());
+    else
+        PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT, "%s", message.c_str());
 }
 
 /* The routing request is refcounted because a card that needs a profile change

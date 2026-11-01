@@ -34,8 +34,9 @@
 # (legacyRequest), the in-call volume per route (callVolume), oFono's hands-free audio agent against a
 # private bus (hfpAgent), stream classes the router sends elsewhere than
 # the rest while an output is in use (classRoute), and the sink a USB
-# headset rings on together with the loudspeaker (usbRing), and the ringtones
-# staying on the loudspeaker with a Bluetooth headset (btRing).
+# headset rings on together with the loudspeaker (usbRing), the ringtones
+# staying on the loudspeaker with a Bluetooth headset (btRing), and audiod's
+# vote on suspending (suspendVoter).
 
 find_package(GTest REQUIRED)
 find_package(PkgConfig REQUIRED)
@@ -63,6 +64,7 @@ add_executable(audiod-tests
     ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/settingsRequest.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/legacyRequest.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/callVolume.cpp
+    ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/suspendVoter.cpp
     test_btstate.cpp
     test_a2dprestore.cpp
     test_callstate.cpp
@@ -86,7 +88,8 @@ add_executable(audiod-tests
     test_headsettakescall.cpp
     test_settingsrequest.cpp
     test_legacyrequest.cpp
-    test_callvolume.cpp)
+    test_callvolume.cpp
+    test_suspendvoter.cpp)
 target_include_directories(audiod-tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src/modules/bluetoothManager
     ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager

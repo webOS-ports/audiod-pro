@@ -9,6 +9,7 @@
         "audio.query",
         "audio.operation",
         "mediacontroller.operation",
-        "mediacontroller.management"
+        "mediacontroller.management",
+        "sleep.operation"
     ]
 }
