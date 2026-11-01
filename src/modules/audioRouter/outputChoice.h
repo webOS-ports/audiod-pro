@@ -1,0 +1,103 @@
+// Copyright (c) 2026 Herman van Hazendonk <github.com@herrie.org>
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+// SPDX-License-Identifier: Apache-2.0
+
+#ifndef _OUTPUT_CHOICE_H
+#define _OUTPUT_CHOICE_H
+
+#include <cstdint>
+#include <string>
+#include <vector>
+
+/*
+ * Which output a display's audio goes to, kept apart from the bus so it can
+ * be tested.
+ *
+ * The outputs a person plugs in or pairs - the headphone jack, a Bluetooth
+ * headset, a USB headset - are "removable": of those that are connected,
+ * the one connected last carries the audio, as on Android
+ * (LastRemovableMediaDevices). Plugging headphones in while a Bluetooth
+ * headset plays moves the audio to the headphones, connecting the headset
+ * again moves it back, and when the one in use goes the audio falls back to
+ * the one connected before it. With no removable output connected, the
+ * connected output with the best (lowest) priority number has it, which is
+ * how audiod chose every output before.
+ *
+ * "Connected last" is a stamp taken when an output is connected, and
+ * dropped only when it is really disconnected: the router clears it then.
+ * An output reported connected again keeps its stamp, whether it was still
+ * marked connected or was marked disconnected because PulseAudio went away
+ * - PulseAudio restarting announces every sink anew, in an order of its
+ * own, and a Bluetooth headset only after its module is loaded again - so
+ * a restart does not reorder anything.
+ */
+namespace OutputChoice
+{
+    struct Output
+    {
+        std::string name;
+        int priority = 0;
+        bool removable = false;
+        bool connected = false;
+        //! When it was connected, from ConnectOrder::next(); 0 if never.
+        std::uint64_t connectedAt = 0;
+        //! The sink it plays through when that is not one of its own name:
+        //! on LuneOS the headphone jack is a port of pcm_output. "" if none.
+        std::string sink;
+        //! Connected when PulseAudio went away, not announced again yet. A
+        //! Bluetooth headset's sink only comes back once its module is
+        //! loaded again, after pcm_output; see waiting().
+        bool awaited = false;
+    };
+
+    //! The output to use, or "" when none is connected.
+    std::string choose(const std::vector<Output> &outputs);
+
+    /* The output to route the audio to now that announced has been
+     * reported connected: the one choose() picks, when that is the
+     * announced output or plays through it, else "" (the routing stays as
+     * it is). pcm_output announced again after a PulseAudio restart, with
+     * the jack told again before it, still has to be routed to: the
+     * headphones play through it, and PulseAudio could not route to it
+     * while it was not there yet. */
+    std::string routeOnAnnounce(const std::vector<Output> &outputs, const std::string &announced);
+
+    /* Whether the audio waits for an awaited output: one that was
+     * connected after the output choose() picks now (or any, when that is
+     * not removable), so it would have the audio again once it is back.
+     * Routing to pcm_output in the meantime would move the music, or a
+     * video call, from a Bluetooth headset to the loudspeaker for the
+     * moment PulseAudio takes to have the headset's sink again, and back.
+     * While waiting, routeOnAnnounce() routes nowhere; the router stops
+     * waiting for an output that is not back after a while (and drops its
+     * place, as for a disconnect). */
+    bool waiting(const std::vector<Output> &outputs);
+
+    /* Hands out increasing connect stamps. 64 bits, so it does not wrap
+     * on any target, armv7 included. */
+    class ConnectOrder
+    {
+    public:
+        //! The stamp an output gets when it is reported connected: the one
+        //! it has (current), or a new one when it has none - it was never
+        //! connected, or was really disconnected since (stamp 0).
+        std::uint64_t stamp(std::uint64_t current);
+
+    private:
+        std::uint64_t mLast = 0;
+    };
+}
+
+#endif // _OUTPUT_CHOICE_H

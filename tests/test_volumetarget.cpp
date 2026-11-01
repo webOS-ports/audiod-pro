@@ -118,3 +118,60 @@ TEST(VolumeTarget, GetVolumeReportsThePhonesOwnWhenNothingIsActive)
 {
     EXPECT_EQ(VolumeTarget::reported("", false), "pcm_output");
 }
+
+TEST(VolumeTarget, ThePhonesOwnOutputMeansTheUsbHeadsetWhenItCarriesTheAudio)
+{
+    // The shell names pcm_output; with a USB headset playing, setting
+    // pcm_output changed nothing anyone could hear.
+    EXPECT_EQ(VolumeTarget::output("pcm_output", "usb_speaker0", true, false), "usb_speaker0");
+    EXPECT_EQ(VolumeTarget::output("pcm_output", "usb_speaker1", true, false), "usb_speaker1");
+    // A Bluetooth headset carrying the audio still wins.
+    EXPECT_EQ(VolumeTarget::output("pcm_output", "usb_speaker0", true, true), "bluetooth_speaker0");
+}
+
+TEST(VolumeTarget, TheUsbHeadsetNamedWhileConnectedIsTheUsbHeadset)
+{
+    EXPECT_EQ(VolumeTarget::output("usb_speaker0", "usb_speaker0", true, false), "usb_speaker0");
+    EXPECT_EQ(VolumeTarget::output("usb_speaker0", "pcm_output", true, false), "usb_speaker0");
+}
+
+TEST(VolumeTarget, TheUsbHeadsetNamedAfterItWentIsTheActiveOutput)
+{
+    EXPECT_EQ(VolumeTarget::output("usb_speaker0", "pcm_output", false, false), "pcm_output");
+    EXPECT_EQ(VolumeTarget::output("usb_speaker0", "", false, false), "pcm_output");
+    EXPECT_EQ(VolumeTarget::output("usb_speaker0", "", false, true), "bluetooth_speaker0");
+}
+
+TEST(VolumeTarget, KnowsTheUsbOutputs)
+{
+    EXPECT_TRUE(VolumeTarget::isUsbOutput("usb_speaker0"));
+    EXPECT_TRUE(VolumeTarget::isUsbOutput("usb_speaker1"));
+    EXPECT_FALSE(VolumeTarget::isUsbOutput("usb_mic0"));
+    EXPECT_FALSE(VolumeTarget::isUsbOutput("pcm_output"));
+    EXPECT_FALSE(VolumeTarget::isUsbOutput("bluetooth_speaker0"));
+    EXPECT_FALSE(VolumeTarget::isUsbOutput(""));
+}
+
+// The headset going (12:46:11 on the Mindphone): the shell had been told
+// bluetooth_speaker0 at 50 and was never told again, so its next key press
+// asked for 40 on the headset, which went to pcm_output and took the
+// phone's volume from 60 to 40.
+TEST(VolumeTarget, TheHeadsetGoingIsTold)
+{
+    EXPECT_TRUE(VolumeTarget::reportMoved("bluetooth_speaker0",
+                                          VolumeTarget::reported("pcm_output", false)));
+    EXPECT_TRUE(VolumeTarget::reportMoved("pcm_output",
+                                          VolumeTarget::reported("pcm_output", true)));
+    EXPECT_TRUE(VolumeTarget::reportMoved("usb_speaker0", "pcm_output"));
+}
+
+TEST(VolumeTarget, NothingMovedIsNotTold)
+{
+    EXPECT_FALSE(VolumeTarget::reportMoved("pcm_output", "pcm_output"));
+    // The headset still carries the audio while this side already heard
+    // pcm_output became active: told once the legacy manager has it too.
+    EXPECT_FALSE(VolumeTarget::reportMoved("bluetooth_speaker0",
+                                           VolumeTarget::reported("pcm_output", true)));
+    // Nobody was told anything yet: nothing to correct.
+    EXPECT_FALSE(VolumeTarget::reportMoved("", "pcm_output"));
+}

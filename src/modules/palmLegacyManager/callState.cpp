@@ -100,6 +100,18 @@ CallState::Transition CallState::transition(ECallMode from, ECallMode to)
     return t;
 }
 
+CallState::Resume CallState::resumeAfterCall(bool pausedForCall, bool onHeadsetLink)
+{
+    if (!pausedForCall)
+        return Resume::Never;
+    return onHeadsetLink ? Resume::Later : Resume::Now;
+}
+
+bool CallState::resumeStillDue(bool pausedForCall, ECallMode mode)
+{
+    return pausedForCall && mode == eCallMode_None;
+}
+
 CallState::Unplug CallState::unplugged(ECallMode mode, bool bluetoothAudio)
 {
     Unplug u{};
@@ -108,4 +120,28 @@ CallState::Unplug CallState::unplugged(ECallMode mode, bool bluetoothAudio)
     u.pauseMedia = (mode == eCallMode_None);
     u.keepPausedAfterCall = !u.pauseMedia;
     return u;
+}
+
+bool CallState::isBluetoothOutput(const std::string &name)
+{
+    return name.compare(0, 11, "bluez_sink.") == 0 ||
+           name.compare(0, 13, "bluez_output.") == 0;
+}
+
+bool CallState::isUsbOutput(const std::string &name)
+{
+    return name.compare(0, 11, "usb_speaker") == 0;
+}
+
+bool CallState::privateOutput(const std::string &sink, bool jackPlugged)
+{
+    return isBluetoothOutput(sink) || isUsbOutput(sink) || jackPlugged;
+}
+
+CallState::Unplug CallState::outputMoved(ECallMode mode, const std::string &from,
+                                         const std::string &to, bool jackPlugged)
+{
+    if (from == to || !privateOutput(from, false))
+        return Unplug{};
+    return unplugged(mode, privateOutput(to, jackPlugged));
 }

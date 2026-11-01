@@ -15,6 +15,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "PulseAudioMixer.h"
+#include "pulseMessage.h"
 
 #define SHORT_DTMF_LENGTH  200
 #define phone_MaxVolume 70
@@ -98,33 +99,20 @@ bool PulseAudioMixer::sendDataToPulse (uint32_t msgType, uint32_t msgID, T subOb
         PM_LOG_ERROR(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT, "pulse connection is not available");
         return false;
     }
-    char *data=(char*)malloc(sizeof(struct paudiodMsgHdr) + sizeof(T));
+    /* The module reads SIZE_MESG_TO_PULSE bytes per message: see
+     * packPulseMessage(). */
+    const std::vector<char> data = packPulseMessage(audioMsgHdr, subObj);
 
-    if (data)
+    int sockfd = g_io_channel_unix_get_fd (mChannel);
+    ssize_t bytes = send(sockfd, data.data(), data.size(), MSG_DONTWAIT);
+
+    if (bytes != static_cast<ssize_t>(data.size()))
     {
-        //copying....
-        memcpy(data, &audioMsgHdr, sizeof(struct paudiodMsgHdr));
-        memcpy(data + sizeof(struct paudiodMsgHdr), &subObj, sizeof(T));
-
-        int sockfd = g_io_channel_unix_get_fd (mChannel);
-        ssize_t bytes = send(sockfd, data, SIZE_MESG_TO_PULSE, MSG_DONTWAIT);
-
-        free(data);
-
-        if (bytes != SIZE_MESG_TO_PULSE)
-        {
-            if (bytes >= 0)
-                PM_LOG_INFO(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT, "sendDataToPulse: only %zd bytes sent to Pulse out of %d (%s).", \
-                                       bytes, SIZE_MESG_TO_PULSE, strerror(errno));
-            else
-                PM_LOG_ERROR(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT, "sendHeaderToPA: send to Pulse failed: %s", strerror(errno));
-        }
-    }
-    else
-    {
-        PM_LOG_ERROR(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT,\
-                "PulseAudioMixer::sendDataToPulse: data handle is NULL");
-        return false;
+        if (bytes >= 0)
+            PM_LOG_INFO(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT, "sendDataToPulse: only %zd bytes sent to Pulse out of %zu (%s).", \
+                                   bytes, data.size(), strerror(errno));
+        else
+            PM_LOG_ERROR(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT, "sendHeaderToPA: send to Pulse failed: %s", strerror(errno));
     }
     return true;
 }
@@ -142,7 +130,7 @@ PulseAudioMixer::setMute(const char* deviceName, const int& mutestatus, LSHandle
     pci.cb=cb;
     mPulseCallBackInfo.insert(std::make_pair(esink_set_master_mute_reply, pci));
 
-    struct paVolumeSet volumeSet;
+    struct paVolumeSet volumeSet{};
     volumeSet.Type = PAUDIOD_VOLUME_SINK_MUTE;
     volumeSet.id = 0;
     volumeSet.volume = 0;
@@ -170,7 +158,7 @@ bool PulseAudioMixer::setPhysicalSourceMute(const char* source, const int& mutes
     pci.cb=cb;
     mPulseCallBackInfo.insert(std::make_pair(esource_set_master_mute_reply, pci));
 
-    struct paVolumeSet volumeSet;
+    struct paVolumeSet volumeSet{};
     volumeSet.Type = PAUDIOD_VOLUME_SOURCE_MUTE;
     volumeSet.id = 0;
     volumeSet.volume = 0;
@@ -199,7 +187,7 @@ PulseAudioMixer::setVirtualSourceMute(int sink, int mutestatus, LSHandle *lshand
     pci.cb=cb;
     mPulseCallBackInfo.insert(std::make_pair(evirtual_source_set_mute_reply, pci));
 
-    struct paVolumeSet volumeSet;
+    struct paVolumeSet volumeSet{};
     volumeSet.Type = PAUDIOD_VOLUME_SOURCEOUTPUT_MUTE;
     volumeSet.id = sink;
     volumeSet.volume = 0;
@@ -227,7 +215,7 @@ PulseAudioMixer::muteSink(const int& sink, const int& mutestatus, LSHandle *lsha
     pci.cb=cb;
     mPulseCallBackInfo.insert(std::make_pair(evirtual_sink_input_set_mute_reply, pci));
 
-    struct paVolumeSet volumeSet;
+    struct paVolumeSet volumeSet{};
     volumeSet.Type = PAUDIOD_VOLUME_SINKINPUT_MUTE;
     volumeSet.id = sink;
     volumeSet.volume = 0;
@@ -258,7 +246,7 @@ PulseAudioMixer::setVolume(const char* deviceName, const int& volume, LSHandle *
     pci.cb=cb;
     mPulseCallBackInfo.insert(std::make_pair(esink_set_master_volume_reply, pci));
 
-    struct paVolumeSet volumeSet;
+    struct paVolumeSet volumeSet{};
     volumeSet.Type = PAUDIOD_VOLUME_SINK_VOLUME;
     volumeSet.id = 0;
     volumeSet.volume = volume;
@@ -306,7 +294,7 @@ PulseAudioMixer::setMicVolume(const char* deviceName, const int& volume, LSHandl
     pci.cb=cb;
     mPulseCallBackInfo.insert(std::make_pair(esource_set_master_volume_reply, pci));
 
-    struct paVolumeSet volumeSet;
+    struct paVolumeSet volumeSet{};
     volumeSet.Type = PAUDIOD_VOLUME_SOURCE_MIC_VOLUME;
     volumeSet.id = 0;
     volumeSet.volume = volume;
@@ -337,7 +325,7 @@ bool PulseAudioMixer::programTrackVolume(EVirtualAudioSink sink, int sinkIndex, 
     pci.cb=cb;
     mPulseCallBackInfo.insert(std::make_pair(evirtual_sink_input_index_set_volume_reply, pci));
 
-    struct paVolumeSet volumeSet;
+    struct paVolumeSet volumeSet{};
     volumeSet.Type = PAUDIOD_VOLUME_SINKINPUT_INDEX;
     volumeSet.id = sink;
     volumeSet.volume = 0;
@@ -364,7 +352,7 @@ bool PulseAudioMixer::programVolume (EVirtualSource source, int volume, LSHandle
     pci.cb=cb;
     mPulseCallBackInfo.insert(std::make_pair(evirtual_source_input_set_volume_reply, pci));
 
-    struct paVolumeSet volumeSet;
+    struct paVolumeSet volumeSet{};
     volumeSet.Type = PAUDIOD_VOLUME_SOURCEOUTPUT_VOLUME;
     volumeSet.id = source;
     volumeSet.volume = 0;
@@ -385,7 +373,7 @@ bool PulseAudioMixer::programVolume (EVirtualSource source, int volume, LSHandle
 bool PulseAudioMixer::setSoundOutputOnRange(EVirtualAudioSink startSink,\
     EVirtualAudioSink endSink, const char* deviceName)
 {
-    struct paRoutingSet routingSet;
+    struct paRoutingSet routingSet{};
     routingSet.Type = PAUDIOD_ROUTING_SINKINPUT_RANGE;
     routingSet.startID = startSink;
     routingSet.endID = endSink;
@@ -401,7 +389,7 @@ bool PulseAudioMixer::setSoundOutputOnRange(EVirtualAudioSink startSink,\
 bool PulseAudioMixer::setSoundInputOnRange(EVirtualSource startSource,\
             EVirtualSource endSource, const char* deviceName)
 {
-    struct paRoutingSet routingSet;
+    struct paRoutingSet routingSet{};
     routingSet.Type = PAUDIOD_ROUTING_SOURCEOUTPUT_RANGE;
     routingSet.startID = startSource;
     routingSet.endID = endSource;
@@ -416,7 +404,7 @@ bool PulseAudioMixer::setSoundInputOnRange(EVirtualSource startSource,\
 
 bool PulseAudioMixer::setDefaultSinkRouting(EVirtualAudioSink startSink, EVirtualAudioSink endSink)
 {
-    struct paRoutingSet routingSet;
+    struct paRoutingSet routingSet{};
     routingSet.Type = PAUDIOD_ROUTING_SINKINPUT_DEFAULT;
     routingSet.startID = startSink;
     routingSet.endID = endSink;
@@ -430,7 +418,7 @@ bool PulseAudioMixer::setDefaultSinkRouting(EVirtualAudioSink startSink, EVirtua
 
 bool PulseAudioMixer::setDefaultSourceRouting(EVirtualSource startSource, EVirtualSource endSource)
 {
-    struct paRoutingSet routingSet;
+    struct paRoutingSet routingSet{};
     routingSet.Type = PAUDIOD_ROUTING_SOURCEOUTPUT_DEFAULT;
     routingSet.startID = startSource;
     routingSet.endID = endSource;
@@ -444,7 +432,7 @@ bool PulseAudioMixer::setDefaultSourceRouting(EVirtualSource startSource, EVirtu
 
 bool PulseAudioMixer::setAudioEffect(std::string effectName, bool enabled) {
     PM_LOG_INFO(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT, "setAudioEffect: effectName: %s, enabled:%d", effectName.c_str(), enabled);
-    struct paEffectSet effectSet;
+    struct paEffectSet effectSet{};
     int status = false;
 
     if (effectName.compare("speech enhancement") == 0)
@@ -494,7 +482,7 @@ bool PulseAudioMixer::setAudioEffect(std::string effectName, bool enabled) {
 //  socket to module-palm-policy
 bool PulseAudioMixer::setAudioEqualizerParam(int preset, int band, int level) {
     PM_LOG_INFO(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT, "setAudioEqualizerParam: preset[%d] band[%d] level[%d]", preset, band, level);
-    struct paEffectSet effectSet;
+    struct paEffectSet effectSet{};
     int status = false;
 
     effectSet.Type = PAUDIOD_EFFECT_EQUALIZER_SETPARAM;
@@ -544,7 +532,7 @@ bool PulseAudioMixer::programLoadBluetooth (const char *address, const char *pro
 
     PM_LOG_DEBUG("programLoadBluetooth sending message");
 
-    struct paModuleSet moduleSet;
+    struct paModuleSet moduleSet{};
     moduleSet.Type = PAUDIOD_MODULE_BLUETOOTH_LOAD;
     moduleSet.id = 0;
     moduleSet.a2dpSource = 0;
@@ -578,7 +566,7 @@ bool PulseAudioMixer::programUnloadBluetooth (const char *profile, const int dis
 
     PM_LOG_DEBUG("%s: sending message", __FUNCTION__);
 
-    struct paModuleSet moduleSet;
+    struct paModuleSet moduleSet{};
     moduleSet.Type = PAUDIOD_MODULE_BLUETOOTH_UNLOAD;
     moduleSet.id = 0;
     moduleSet.a2dpSource = 0;
@@ -611,7 +599,7 @@ bool PulseAudioMixer::programA2dpSource (const bool & a2dpSource)
         return ret;
     }
 
-    struct paModuleSet moduleSet;
+    struct paModuleSet moduleSet{};
     moduleSet.Type = PAUDIOD_MODULE_BLUETOOTH_A2DPSOURCE;
     moduleSet.id = 0;
     moduleSet.a2dpSource = a2dpSource;
@@ -643,7 +631,6 @@ bool PulseAudioMixer::externalSoundcardPathCheck (std::string filename, int stat
 
 bool PulseAudioMixer::loadInternalSoundCard(char cmd, int cardNumber, int deviceNumber, int status, bool isOutput, const char* deviceName, PulseCallBackFunc cb)
 {
-    char buffer[SIZE_MESG_TO_PULSE];
     bool returnValue  = false;
     std::string card_no;
     std::string device_no;
@@ -681,7 +668,8 @@ bool PulseAudioMixer::loadInternalSoundCard(char cmd, int cardNumber, int device
     }
 
     PM_LOG_INFO (MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT,\
-        "loadInternalSoundCard sending message %s", buffer);
+        "loadInternalSoundCard: card %d device %d, %s, status %d", cardNumber, deviceNumber,
+        deviceName ? deviceName : "", status);
 
 
     pulseCallBackInfo pci;
@@ -691,7 +679,7 @@ bool PulseAudioMixer::loadInternalSoundCard(char cmd, int cardNumber, int device
     pci.cb=cb;
     mPulseCallBackInfo.insert(std::make_pair(eload_lineout_alsa_sink_reply, pci));
 
-    struct paDeviceSet deviceSet;
+    struct paDeviceSet deviceSet{};
     deviceSet.Type = PAUDIOD_DEVICE_LOAD_LINEOUT_ALSA_SINK;
     deviceSet.cardNo = cardNumber;
     deviceSet.deviceNo = deviceNumber;
@@ -712,7 +700,6 @@ bool PulseAudioMixer::loadInternalSoundCard(char cmd, int cardNumber, int device
 
 bool PulseAudioMixer::sendUsbMultipleDeviceInfo(int isOutput, int maxDeviceCount, const std::string &deviceBaseName)
 {
-    char buffer[SIZE_MESG_TO_PULSE];
     bool returnValue  = false;
 
     if (!mChannel) {
@@ -722,9 +709,10 @@ bool PulseAudioMixer::sendUsbMultipleDeviceInfo(int isOutput, int maxDeviceCount
     }
 
     PM_LOG_INFO (MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT,\
-        "sendUsbMultipleDeviceInfo sending message %s", buffer);
+        "sendUsbMultipleDeviceInfo: %s, %d devices, output %d", deviceBaseName.c_str(),
+        maxDeviceCount, isOutput);
 
-    struct paDeviceSet deviceSet;
+    struct paDeviceSet deviceSet{};
     deviceSet.Type = PAUDIOD_DEVICE_LOAD_USB_MULTIPLE_DEVICE;
     deviceSet.cardNo = 0;
     deviceSet.deviceNo = 0;
@@ -745,7 +733,6 @@ bool PulseAudioMixer::sendUsbMultipleDeviceInfo(int isOutput, int maxDeviceCount
 
 bool PulseAudioMixer::sendInternalDeviceInfo(int isOutput, int maxDeviceCount)
 {
-    char buffer[SIZE_MESG_TO_PULSE];
     bool returnValue  = false;
 
     if (!mChannel) {
@@ -755,9 +742,9 @@ bool PulseAudioMixer::sendInternalDeviceInfo(int isOutput, int maxDeviceCount)
     }
 
     PM_LOG_INFO (MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT,\
-        "sendInternalDeviceInfo sending message %s", buffer);
+        "sendInternalDeviceInfo: %d devices, output %d", maxDeviceCount, isOutput);
 
-    struct paDeviceSet deviceSet;
+    struct paDeviceSet deviceSet{};
     deviceSet.Type = PAUDIOD_DEVICE_LOAD_INTERNAL_CARD;
     deviceSet.cardNo = 0;
     deviceSet.deviceNo = 0;
@@ -782,7 +769,7 @@ bool PulseAudioMixer::loadUSBSinkSource(char cmd,int cardno, int deviceno, int s
     std::string card_no = std::to_string(cardno);
     std::string device_no = std::to_string(deviceno);
     std::string filename;
-    struct paDeviceSet deviceSet;
+    struct paDeviceSet deviceSet{};
 
     if (!mChannel) {
         PM_LOG_ERROR(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT, "There is no socket connection to pulseaudio");
@@ -1335,6 +1322,17 @@ void PulseAudioMixer::_pulseGone(GIOChannel *ch)
     g_source_remove (mSourceID);
     g_io_channel_unref(mChannel);
     mChannel = NULL;
+
+    /* Everything audiod told PulseAudio went with it: where the virtual
+     * sinks route, the cards and the Bluetooth module it loaded, the
+     * volumes and mutes. Say so, so that the modules forget what they sent
+     * and send it again once the next connection is up, as at startup.
+     * Without this they went on believing it was all still there, sent
+     * nothing to the new daemon, and every new stream stayed on the virtual
+     * sink it was opened on - a null sink: silence. */
+    if (mObjMixerCallBack)
+        mObjMixerCallBack->callBackMixerStatus(false, utils::ePulseMixer);
+
     g_timeout_add (0, ::_timer, this);
 }
 
@@ -1487,7 +1485,7 @@ bool PulseAudioMixer::closeClient(int sinkIndex)
     PM_LOG_DEBUG("PulseAudioMixer::closeClient");
     bool ret = false;
 
-    struct paParamSet paramSet;
+    struct paParamSet paramSet{};
     paramSet.Type = PAUDIOD_SETPARAM_CLOSE_PLAYBACK;
     paramSet.ID = sinkIndex;
     paramSet.param1 = 0;

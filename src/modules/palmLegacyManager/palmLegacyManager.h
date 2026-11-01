@@ -19,6 +19,8 @@
 #ifndef _PALM_LEGACY_MANAGER_H_
 #define _PALM_LEGACY_MANAGER_H_
 
+#include <array>
+#include <list>
 #include <set>
 #include <string>
 #include <vector>
@@ -31,8 +33,16 @@
 #include "moduleManager.h"
 #include "callState.h"
 #include "ringState.h"
+#include "usbRing.h"
+#include "btRing.h"
+#include "storedSetting.h"
+#include "settingsRequest.h"
 #include "paReconnect.h"
 #include "videoSpeaker.h"
+#include "btCall.h"
+#include "hfpAgent.h"
+#include "callVolume.h"
+#include "voiceVolumeStream.h"
 
 /*
  * palmLegacyManager -- serves the Palm-era com.palm.audio API on top of audiod.
@@ -72,7 +82,7 @@
  * the two legacy names need their own handles, registered here.
  */
 
-class PalmLegacyManager : public ModuleInterface
+class PalmLegacyManager : public ModuleInterface, private HfpAgent::Listener
 {
     public:
         /* Where audio should come out for a routable category. Named after the
@@ -137,11 +147,11 @@ class PalmLegacyManager : public ModuleInterface
         ECallMode mCallMode;
         ECallMode mAppliedCallMode;
         EPhoneRoute mAppliedRoute;
-        bool mAppliedRing;
+        bool mAppliedRing;      //!< speakerWanted() as last applied
         /* Who has reported which calls; mCallMode follows from it. */
         CallState mCallState;
-        /* Whether a ringtone or alarm is playing: with headphones in, it
-         * rings on the loudspeaker as well. */
+        /* Whether a ringtone, an alarm or an alert is playing, and music:
+         * with headphones in, they ring on the loudspeaker as well. */
         RingState mRingState;
         /* Whether a video call has put itself on the loudspeaker. */
         VideoSpeaker mVideoSpeaker;
@@ -174,12 +184,90 @@ class PalmLegacyManager : public ModuleInterface
         bool mJackSeenUnplugged;
         std::string mBtAudioSink;
         std::string mBtAudioName;
+        /* The USB headset's sink (usb_speaker0, ...) while it carries the
+         * audio, "" otherwise; followed through the active output as well. */
+        std::string mUsbAudioSink;
+        /* While a USB headset carries the audio, the ringtones and alerts go
+         * to a sink combining it with the loudspeaker: see usbRing.h. */
+        UsbRing mUsbRing;
+        /* While a Bluetooth headset carries the audio, the ringtones stay on
+         * the loudspeaker: see btRing.h. */
+        BtRing mBtRing;
+        /* Taking the combined sink down: what plays on it is moved to
+         * fallback, then its module is unloaded. A chain of callbacks on
+         * mPaContext; dropPaContext() frees what a dead context left. */
+        struct UsbRingDrop
+        {
+            PalmLegacyManager *self;
+            uint32_t module;
+            uint32_t sink;
+            std::string fallback;
+        };
+        std::list<UsbRingDrop> mUsbRingDrops;
+
+        /* Call audio on a hands-free headset: oFono is the gateway, mHfpAgent
+         * its audio agent holding the SCO link, mBtCall what is connected and
+         * whether the call belongs on the headset. */
+        BtCall mBtCall;
+        HfpAgent *mHfpAgent;
+        /* Whether a headset connecting during a call takes it: Bluetooth
+         * Settings' "Headset takes calls", kept in settingsservice as
+         * sound/bluetoothHeadsetTakesCall, the way the master volume keeps
+         * sound/soundOutputList (OSEMasterVolumeManager). */
+        StoredSetting<bool> mHeadsetTakesCall;
+        /* Whether the alerts and notifications stay on the loudspeaker
+         * with a Bluetooth headset, as the ringtones do: Bluetooth
+         * Settings' "Alerts on phone speaker", sound/bluetoothAlertsOnSpeaker,
+         * off by default (see btRing.h). */
+        StoredSetting<bool> mAlertsOnSpeaker;
+        /* com.palm.audio/ringtone's volume and mute, the volume of the
+         * pringtones stream, which the Phone app rings in: kept as
+         * sound/ringtoneVolume and sound/ringtoneMuted, so a restart does
+         * not ring at the policy's 100 again. */
+        StoredSetting<int> mRingtoneVolume;
+        StoredSetting<bool> mRingtoneMuted;
+        void applyRingtoneVolume();
+        /* The slider sends a volume for every step it moves: what it ends
+         * on is stored, RINGTONE_STORE_DELAY_MS after the last one. */
+        void storeRingtoneVolume(bool volume, bool muted);
+        void writeRingtoneVolume();
+        static gboolean storeRingtoneVolumeCb(gpointer data);
+        guint mStoreRingtoneTimer = 0;
+        bool mStoreRingtoneVolume = false;
+        bool mStoreRingtoneMuted = false;
+        /* The in-call volume, one for each route a call is heard on
+         * (callVolume.h), kept as sound/callVolumeEarpiece and the others;
+         * the volume keys move it during a call, through /phone. */
+        CallVolume mCallVolume;
+        /* The carrier call's handle on the HAL voice volume, while one is
+         * up, on mVoiceSink: the droid card's primary sink. */
+        VoiceVolumeStream mVoiceStream;
+        std::string mVoiceSink;
+        static CallVolume::Route callVolumeRouteOf(EPhoneRoute route);
+        CallVolume::Route callVolumeRoute() const;
+        void applyCallVolume();
+        void callVolumeChanged(CallVolume::Route route);
+        void storeCallVolume(CallVolume::Route route);
+        void writeCallVolume();
+        static gboolean storeCallVolumeCb(gpointer data);
+        guint mStoreCallVolumeTimer = 0;
+        std::array<bool, CallVolume::kRoutes> mStoreCallVolume{};
+        void readStoredSettings();
+        void storeSettings(const SettingsRequest::Change &change);
+        void applySettings();
+        pbnjson::JValue settingsReply() const;
+        static bool _storedSettingsCb(LSHandle *sh, LSMessage *reply, void *ctx);
 
         /* Media this module paused for a call, to be resumed when it ends.
          * mMediaGeneration invalidates the replies of a pause still in flight
          * when the call it was for has already ended. */
         bool mResumeMediaAfterCall;
         unsigned int mMediaGeneration;
+        /* The resume after a call on a Bluetooth headset's link, put off
+         * until the link is down (CallState::resumeAfterCall). */
+        guint mResumeMediaTimer;
+        static gboolean resumeMediaCb(gpointer userdata);
+        void cancelResumeMedia();
 
         static LegacyCategory sCategories[];
 
@@ -215,7 +303,7 @@ class PalmLegacyManager : public ModuleInterface
             PalmLegacyManager *self;
             ECallMode mode;
             EPhoneRoute route;
-            bool ring;
+            bool ring;      //!< RingState::speakerWanted(): the jack gets the loudspeaker too
             int refs;
         };
 
@@ -246,7 +334,21 @@ class PalmLegacyManager : public ModuleInterface
         static void paRingInputCb(pa_context *c, const pa_sink_input_info *info, int eol, void *userdata);
         static void paBtSinkCb(pa_context *c, const pa_sink_info *info, int eol, void *userdata);
         void setJackState(EJackState state);
+        /* Tells audioRouter whether headphones are in (pcm_headphone). */
+        void tellRouterJack();
         void setActiveOutput(const std::string &sinkName);
+        void followUsbOutput(const std::string &sinkName);
+        /* The combined loudspeaker-and-USB sink and the router's override
+         * for it, or the Bluetooth headset's, in line with the output, the
+         * call mode and the ringer switch. */
+        void syncUsbRing();
+        void dropUsbRingSink(uint32_t module);
+        void finishUsbRingDrop(UsbRingDrop *drop);
+        static void paUsbRingLoadedCb(pa_context *c, uint32_t idx, void *userdata);
+        static void paUsbRingStaleCb(pa_context *c, const pa_sink_info *info, int eol, void *userdata);
+        static void paUsbRingDropSinkCb(pa_context *c, const pa_sink_info *info, int eol, void *userdata);
+        static void paUsbRingDropInputCb(pa_context *c, const pa_sink_input_info *info, int eol,
+                                         void *userdata);
         bool jackPlugged() const
         {
             return mJackState == eJack_Headphones || mJackState == eJack_Headset;
@@ -257,10 +359,26 @@ class PalmLegacyManager : public ModuleInterface
          * the jack or else the loudspeaker. */
         EPhoneRoute effectiveRoute() const;
 
+        /* Hands-free headset: what the call situation is in BtCall's terms,
+         * and opening or closing the SCO link to match it. */
+        BtCall::Situation btSituation() const;
+        void syncBtCall();
+        /* HfpAgent::Listener. Not marked override: the ModuleInterface
+         * overrides in this class are not either (-Winconsistent-missing-override). */
+        void hfpCardAdded(const std::string &card, const std::string &remote);
+        void hfpCardRemoved(const std::string &card);
+        void hfpScoConnected(const std::string &card, unsigned codec);
+        void hfpScoConnectFailed(const std::string &card, const std::string &error);
+        void hfpScoClosed(const std::string &card);
+        void hfpServiceGone();
+        /* The headset is gone or gave the audio back: a call the user had put
+         * on it goes back to the default route. */
+        static void dropBluetoothChoice();
+
         /* Pause whatever is playing through com.webos.service.mediacontroller,
          * and, for a call, play it again once the call is over. */
         void pauseMedia(bool resumeAfterCall);
-        void resumeMedia();
+        void resumeMedia(bool onHeadsetLink);
         void sendMediaKey(const char *keyEvent);
         static bool _mediaSessionsCb(LSHandle *sh, LSMessage *reply, void *ctx);
         static bool _mediaPlayStatusCb(LSHandle *sh, LSMessage *reply, void *ctx);
@@ -307,7 +425,8 @@ class PalmLegacyManager : public ModuleInterface
         static bool _masterVolumeStatusCb(LSHandle *sh, LSMessage *reply, void *ctx);
 
         pbnjson::JValue rootStatus() const;
-        pbnjson::JValue categoryStatus(const LegacyCategory *cat, const char *action) const;
+        pbnjson::JValue categoryStatus(const LegacyCategory *cat, const char *action,
+                                       bool volumeChanged = false) const;
 
         void notifyStatusSubscribers();
         void notifyCategory(const LegacyCategory *cat, const char *action);
@@ -360,6 +479,8 @@ class PalmLegacyManager : public ModuleInterface
         /* Root category -- the org.webosports.service.audio surface that
          * luna-sysmgr's DisplayManager and the Settings app already speak. */
         static bool _getStatus(LSHandle *sh, LSMessage *message, void *ctx);
+        static bool _getSettings(LSHandle *sh, LSMessage *message, void *ctx);
+        static bool _setSettings(LSHandle *sh, LSMessage *message, void *ctx);
         static bool _rootSetVolume(LSHandle *sh, LSMessage *message, void *ctx);
         static bool _rootGetVolume(LSHandle *sh, LSMessage *message, void *ctx);
         static bool _setMute(LSHandle *sh, LSMessage *message, void *ctx);

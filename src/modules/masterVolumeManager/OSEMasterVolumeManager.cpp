@@ -245,6 +245,8 @@ void OSEMasterVolumeManager::printDb()
 OSEMasterVolumeManager::~OSEMasterVolumeManager()
 {
     PM_LOG_DEBUG("OSEMasterVolumeManager destructor");
+    if (mReportCheckIdle)
+        g_source_remove(mReportCheckIdle);
 }
 
 
@@ -316,6 +318,7 @@ void OSEMasterVolumeManager::setDeviceVolume(std::string deviceName, int display
     {
         PM_LOG_INFO(MSGID_CLIENT_MASTER_VOLUME_MANAGER, INIT_KVCOUNT,"make %s as volume : %d", it->first.c_str(), volume);
         it->second.volume = volume;
+        it->second.volumeKnown = true;
     }
 }
 
@@ -2296,7 +2299,10 @@ std::string OSEMasterVolumeManager::getVolumeInfo(const std::string &soundOutput
         /* What the volume keys move: the headset that carries the audio,
          * also when this side missed it becoming active. */
         if (DISPLAY_ONE == display)
+        {
             soundDevice = VolumeTarget::reported(soundDevice, syncBluetoothAudio());
+            mLastReportedOutput = soundDevice;
+        }
     }
     else
     {
@@ -2424,6 +2430,33 @@ void OSEMasterVolumeManager::eventActiveDeviceInfo(const std::string deviceName,
         deviceName.c_str(), display.c_str(), (int)isConnected, (int)isOutput, (int)isActive);
     std::string device = getMappedName(deviceName);     //FIXME:
     setActiveStatus(device, getDisplayId(display), isOutput, isActive);
+    if (isOutput && getDisplayId(display) == DISPLAY_ONE)
+        checkReportedOutput();
+}
+
+void OSEMasterVolumeManager::checkReportedOutput()
+{
+    if (!mReportCheckIdle)
+        mReportCheckIdle = g_idle_add(&OSEMasterVolumeManager::checkReportedOutputCb, this);
+}
+
+gboolean OSEMasterVolumeManager::checkReportedOutputCb(gpointer data)
+{
+    OSEMasterVolumeManager *self = static_cast<OSEMasterVolumeManager*>(data);
+    if (!self)
+        return G_SOURCE_REMOVE;
+    self->mReportCheckIdle = 0;
+
+    const std::string now = VolumeTarget::reported(self->getActiveDevice(DISPLAY_ONE, true),
+                                                   self->syncBluetoothAudio());
+    if (VolumeTarget::reportMoved(self->mLastReportedOutput, now))
+    {
+        PM_LOG_INFO(MSGID_CLIENT_MASTER_VOLUME_MANAGER, INIT_KVCOUNT,
+            "The volume is now %s's, not %s's: telling getVolume's subscribers",
+            now.c_str(), self->mLastReportedOutput.c_str());
+        self->notifyVolumeSubscriber("", DEFAULT_ONE_DISPLAY_ID, "internal");
+    }
+    return G_SOURCE_REMOVE;
 }
 
 void OSEMasterVolumeManager::eventResponseSoundOutputDeviceInfo(utils::mapSoundDevicesInfo soundOutputInfo)
@@ -2481,6 +2514,8 @@ void OSEMasterVolumeManager::eventMixerStatus(bool mixerStatus, utils::EMIXER_TY
         requestSoundInputDeviceInfo();
         requestSoundOutputDeviceInfo();
     }
+    else if (utils::ePulseMixer == mixerType)
+        mPulseReplay.pulseLost();
 }
 
 int OSEMasterVolumeManager::getVolumeFromDB(std::string deviceName, bool isOutput, bool isInternal, bool &isFound)
@@ -2829,6 +2864,25 @@ void OSEMasterVolumeManager::eventDeviceConnectionStatus(const std::string &devi
             newDev.deviceNameDetail = deviceNameDetail;
             newDev.isOutput = isOutput;
             mConnectedDevicesList.push_back(newDev);
+        }
+        /* Back after PulseAudio restarted: the new daemon has the sink at
+         * its own default, full and not muted. Give it what audiod has - the
+         * mute it reports, and the volume if it ever set one: the 0 an
+         * output starts with is no volume anyone chose, and would silence
+         * it. */
+        auto detail = deviceDetailMap.find(modDeviceName);
+        AudioMixer *mixer = AudioMixer::getAudioMixerInstance();
+        if (isOutput && detail != deviceDetailMap.end() && mixer &&
+            mPulseReplay.takeReplay(modDeviceName))
+        {
+            const std::string sink = getActualDeviceName(modDeviceName);
+            PM_LOG_INFO(MSGID_CLIENT_MASTER_VOLUME_MANAGER, INIT_KVCOUNT,\
+                "%s back after PulseAudio restarted: volume %d (%s), mute %d", sink.c_str(),
+                detail->second.volume, detail->second.volumeKnown ? "set" : "never set",
+                (int)detail->second.muteStatus);
+            if (detail->second.volumeKnown)
+                mixer->setVolume(sink.c_str(), detail->second.volume, nullptr, nullptr, nullptr, nullptr);
+            mixer->setMute(sink.c_str(), detail->second.muteStatus ? 1 : 0, nullptr, nullptr, nullptr, nullptr);
         }
     }
     else if ((deviceStatus == utils::eDeviceDisconnected))

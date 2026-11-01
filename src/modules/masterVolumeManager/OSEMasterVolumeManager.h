@@ -19,6 +19,7 @@
 
 #include "masterVolumeInterface.h"
 #include "audioMixer.h"
+#include "pulseReplay.h"
 #include <list>
 #include <map>
 
@@ -72,6 +73,8 @@ struct deviceDetail
     bool isActive;
     bool muteStatus;
     bool isOutput;
+    //! Whether volume is one audiod set, rather than the 0 it starts as.
+    bool volumeKnown;
 
     deviceDetail(bool isOutput)
     {
@@ -81,6 +84,7 @@ struct deviceDetail
         muteStatus = false;
         volume = 0;
         display = 0;
+        volumeKnown = false;
     }
 };
 
@@ -102,6 +106,8 @@ class OSEMasterVolumeManager : public MasterVolumeInterface
         std::list<deviceInfo> mIntInputDeviceListDB;
         std::list<deviceInfo> mExtInputDeviceListDB;
         bool mCacheRead;
+        //! Which outputs get their volume and mute again after PulseAudio restarted.
+        PulseReplay mPulseReplay;
         std::map<std::string,std::string> deviceNameMap;
         std::map<std::string,int> deviceVolumeMap;
 
@@ -168,6 +174,14 @@ class OSEMasterVolumeManager : public MasterVolumeInterface
         //! about it if it missed the headset.
         bool syncBluetoothAudio();
         std::string volumeTargetOf(const std::string &soundOutput);
+        //! An output became active or inactive: once the change has gone
+        //! round (the legacy manager hears of a headset going after this
+        //! side does), getVolume's subscribers are told the output the
+        //! volume is on now if it is not the one they were told last.
+        void checkReportedOutput();
+        static gboolean checkReportedOutputCb(gpointer data);
+        std::string mLastReportedOutput;
+        guint mReportCheckIdle = 0;
 
         void setVolume(LSHandle *lshandle, LSMessage *message, void *ctx);
         void setMicVolume(LSHandle *lshandle, LSMessage *message, void *ctx);

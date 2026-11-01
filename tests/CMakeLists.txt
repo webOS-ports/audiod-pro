@@ -15,42 +15,88 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Unit tests for the parts of audiod that stand on their own: the
-# Bluetooth manager's bookkeeping (btState) and the call state the legacy
+# Bluetooth manager's bookkeeping (btState) and which headsets to connect
+# A2DP to again after PulseAudio went (a2dpRestore), and the call state the legacy
 # manager routes and pauses media by (callState), and whether something is
 # ringing (ringState), when to reconnect to PulseAudio (paReconnect),
 # when a video call goes on the loudspeaker (videoSpeaker),
 # which output a volume request moves (volumeTarget), when an alert lowers
-# the music (duckPolicy), what a WAV file's header says about the sound
-# playSound plays (wavHeader), and stopping on SIGTERM within a deadline
-# (shutdownGuard).
+# the music (duckPolicy), which classes a call mutes (callMediaMute), what
+# a WAV file's header says about the sound
+# playSound plays (wavHeader), stopping on SIGTERM within a deadline
+# (shutdownGuard), which output the audio goes to (outputChoice), what is
+# sent to PulseAudio again after it restarted: the cards (cardTable) and
+# the outputs' volumes and mutes (pulseReplay), and what a message to
+# module-palm-policy holds (pulseMessage), whether a call belongs on a
+# hands-free headset (btCall) and whether one connecting during a call
+# takes it (headsetTakesCall) and what a request to change that asks for
+# (settingsRequest), what the Palm-era methods' payloads must hold
+# (legacyRequest), the in-call volume per route (callVolume), oFono's hands-free audio agent against a
+# private bus (hfpAgent), stream classes the router sends elsewhere than
+# the rest while an output is in use (classRoute), and the sink a USB
+# headset rings on together with the loudspeaker (usbRing), and the ringtones
+# staying on the loudspeaker with a Bluetooth headset (btRing).
 
 find_package(GTest REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(TEST_GIO REQUIRED gio-2.0 gio-unix-2.0)
 
 add_executable(audiod-tests
     ${CMAKE_SOURCE_DIR}/src/modules/bluetoothManager/btState.cpp
+    ${CMAKE_SOURCE_DIR}/src/modules/bluetoothManager/a2dpRestore.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/callState.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/ringState.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/paReconnect.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/videoSpeaker.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/masterVolumeManager/volumeTarget.cpp
+    ${CMAKE_SOURCE_DIR}/src/modules/masterVolumeManager/pulseReplay.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/audioPolicyManager/duckPolicy.cpp
+    ${CMAKE_SOURCE_DIR}/src/modules/audioPolicyManager/callMediaMute.cpp
     ${CMAKE_SOURCE_DIR}/src/wavHeader.cpp
     ${CMAKE_SOURCE_DIR}/src/shutdownGuard.cpp
+    ${CMAKE_SOURCE_DIR}/src/modules/audioRouter/outputChoice.cpp
+    ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/btCall.cpp
+    ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/hfpAgent.cpp
+    ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/usbRing.cpp
+    ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/btRing.cpp
+    ${CMAKE_SOURCE_DIR}/src/modules/audioRouter/classRoute.cpp
+    ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/settingsRequest.cpp
+    ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/legacyRequest.cpp
+    ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/callVolume.cpp
     test_btstate.cpp
+    test_a2dprestore.cpp
     test_callstate.cpp
     test_ringstate.cpp
     test_pareconnect.cpp
     test_videospeaker.cpp
     test_volumetarget.cpp
     test_duckpolicy.cpp
+    test_callmediamute.cpp
     test_wavheader.cpp
-    test_shutdownguard.cpp)
+    test_shutdownguard.cpp
+    test_cardtable.cpp
+    test_pulsereplay.cpp
+    test_pulsemessage.cpp
+    test_outputchoice.cpp
+    test_btcall.cpp
+    test_hfpagent.cpp
+    test_classroute.cpp
+    test_usbring.cpp
+    test_btring.cpp
+    test_headsettakescall.cpp
+    test_settingsrequest.cpp
+    test_legacyrequest.cpp
+    test_callvolume.cpp)
 target_include_directories(audiod-tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src/modules/bluetoothManager
     ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager
     ${CMAKE_SOURCE_DIR}/src/modules/masterVolumeManager
     ${CMAKE_SOURCE_DIR}/src/modules/audioPolicyManager
-    ${CMAKE_SOURCE_DIR}/include)
+    ${CMAKE_SOURCE_DIR}/src/modules/deviceManager
+    ${CMAKE_SOURCE_DIR}/src/modules/audioRouter
+    ${CMAKE_SOURCE_DIR}/include
+    ${TEST_GIO_INCLUDE_DIRS})
 target_compile_options(audiod-tests PRIVATE -Wall -Wextra)
-target_link_libraries(audiod-tests GTest::gtest GTest::gtest_main pthread)
+target_link_libraries(audiod-tests GTest::gtest GTest::gtest_main ${TEST_GIO_LDFLAGS}
+    ${LIBPBNJSON_LDFLAGS} ${PBNJSON_C_LDFLAGS} pthread)
 add_test(NAME audiod-tests COMMAND audiod-tests)
