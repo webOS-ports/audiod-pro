@@ -15,7 +15,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Unit tests for the parts of audiod that stand on their own: the
-# Bluetooth manager's bookkeeping (btState) and the call state the legacy
+# Bluetooth manager's bookkeeping (btState) and which headsets to connect
+# A2DP to again after PulseAudio went (a2dpRestore), and the call state the legacy
 # manager routes and pauses media by (callState), and whether something is
 # ringing (ringState), when to reconnect to PulseAudio (paReconnect),
 # when a video call goes on the loudspeaker (videoSpeaker),
@@ -40,6 +41,7 @@ pkg_check_modules(TEST_GIO REQUIRED gio-2.0 gio-unix-2.0)
 
 add_executable(audiod-tests
     ${CMAKE_SOURCE_DIR}/src/modules/bluetoothManager/btState.cpp
+    ${CMAKE_SOURCE_DIR}/src/modules/bluetoothManager/a2dpRestore.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/callState.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/ringState.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/paReconnect.cpp
@@ -57,6 +59,7 @@ add_executable(audiod-tests
     ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/settingsRequest.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/palmLegacyManager/legacyRequest.cpp
     test_btstate.cpp
+    test_a2dprestore.cpp
     test_callstate.cpp
     test_ringstate.cpp
     test_pareconnect.cpp

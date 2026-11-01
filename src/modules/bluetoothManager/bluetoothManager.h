@@ -24,17 +24,21 @@
 #include <cstring>
 #include <string>
 
+#include <glib.h>
+
 #include "utils.h"
 #include "messageUtils.h"
 #include "audioMixer.h"
 #include "log.h"
 #include "moduleFactory.h"
 #include "btState.h"
+#include "a2dpRestore.h"
 
 #define BT_ADAPTER_SUBSCRIBE_PAYLOAD "{\"subscribe\":true}"
 #define BT_DEVICE_GET_STATUS    "luna://com.webos.service.bluetooth2/device/getStatus"
 #define BT_A2DP_GET_STATUS      "luna://com.webos.service.bluetooth2/a2dp/getStatus"
 #define BT_ADAPTER_GET_STATUS   "luna://com.webos.service.bluetooth2/adapter/getStatus"
+#define BT_A2DP_CONNECT         "luna://com.webos.service.bluetooth2/a2dp/connect"
 
 typedef std::map<std::string, bool> adapterInfo;
 typedef std::map<std::string, int> adapterDisplayIDMap;
@@ -53,6 +57,16 @@ class BluetoothManager : public ModuleInterface
         bool mA2dpSource;
         int mDisplayID;
         BtState mBtState;
+        /* Headsets whose A2DP went with PulseAudio, to connect again once
+         * it is back: see a2dpRestore.h. */
+        A2dpRestore mA2dpRestore;
+        //! Gives PulseAudio's new endpoints time to be registered with
+        //! BlueZ before A2DP is connected to them (PipeWire waits 2 s too).
+        static constexpr guint A2DP_RESTORE_DELAY_SECONDS = 2;
+        guint mA2dpRestoreTimer = 0;
+        void scheduleA2dpRestore();
+        static gboolean a2dpRestoreTimedOut(gpointer data);
+        static bool a2dpConnectReply(LSHandle *sh, LSMessage *reply, void *ctx);
         std::string mAdapterNameKey;
         std::string mA2dpAdapterName;
 
