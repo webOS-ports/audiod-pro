@@ -552,6 +552,25 @@ BluetoothManager::BluetoothManager(ModuleConfig* const pConfObj):
         PM_LOG_ERROR(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT, \
             "mObjModuleManager instance is null");
     }
+    else
+        mObjModuleManager->subscribeModuleEvent(this, utils::eEventMixerStatus);
+}
+
+void BluetoothManager::eventMixerStatus(bool mixerStatus, utils::EMIXER_TYPE mixerType)
+{
+    if (utils::ePulseMixer != mixerType || !mixerStatus || !mObjAudioMixer)
+        return;
+    /* PulseAudio is (back) up. One that restarted lost the Bluetooth module
+     * audiod had it load, and the headsets' sinks with it; one that came up
+     * after a headset connected never had them. Have it load them for every
+     * headset still connected: their sinks come back, module-palm-policy
+     * announces them, and audioRouter routes to them again. */
+    for (const auto &device : mBtState.connectedDevices())
+    {
+        PM_LOG_INFO(MSGID_BLUETOOTH_MANAGER, INIT_KVCOUNT,\
+            "%s: loading bluetooth again for %s", __FUNCTION__, device.first.c_str());
+        mObjAudioMixer->programLoadBluetooth(device.first.c_str(), "a2dp", displayOfAdapter(device.second));
+    }
 }
 
 BluetoothManager::~BluetoothManager()
@@ -608,6 +627,12 @@ void BluetoothManager::handleEvent(events::EVENTS_T* event)
                     "handleEvent:: eEventServerStatusSubscription");
             events::EVENT_SERVER_STATUS_INFO_T *serverStatusInfoEvent = (events::EVENT_SERVER_STATUS_INFO_T*)event;
             eventServerStatusInfo(serverStatusInfoEvent->serviceName, serverStatusInfoEvent->connectionStatus);
+        }
+        break;
+        case utils::eEventMixerStatus:
+        {
+            const auto *mixerStatusEvent = reinterpret_cast<const events::EVENT_MIXER_STATUS_T *>(event);
+            eventMixerStatus(mixerStatusEvent->mixerStatus, mixerStatusEvent->mixerType);
         }
         break;
         case eEventBTDeviceStatus:

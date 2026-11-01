@@ -20,6 +20,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 /*
@@ -59,6 +60,10 @@ public:
     bool isConnected(const std::string &address) const;
     //! The adapter a connected device is on, or "".
     std::string adapterOf(const std::string &address) const;
+    //! Every connected device, as (address, adapter): what PulseAudio has
+    //! to be told again when it has restarted, since its Bluetooth module
+    //! and the headsets' sinks went with it.
+    std::vector<std::pair<std::string, std::string>> connectedDevices() const;
 
     //! adapter's whole device list says these have A2DP to us: the
     //! devices on that adapter that were connected and are not among them.

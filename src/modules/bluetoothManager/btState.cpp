@@ -65,6 +65,11 @@ std::string BtState::adapterOf(const std::string &address) const
     return it == mConnected.end() ? std::string() : it->second;
 }
 
+std::vector<std::pair<std::string, std::string>> BtState::connectedDevices() const
+{
+    return {mConnected.begin(), mConnected.end()};
+}
+
 std::vector<std::string> BtState::gone(const std::string &adapter,
                                        const std::set<std::string> &reported) const
 {

@@ -16,6 +16,7 @@
 *
 * LICENSE@@@ */
 #include "deviceManager.h"
+#include "cardTable.h"
 
 #define GET_ATTACHED_NOSTORAGE_DEVICES_URI "luna://com.webos.service.pdm/getAttachedNonStorageDeviceList"
 #define GET_ATTACHED_NOSTORAGE_DEVICES_PAYLOAD "{\"subscribe\":true,\"category\":\"Audio\",\"groupSubDevices\":true}"
@@ -67,21 +68,26 @@ void DeviceManager::eventMixerStatus (bool mixerStatus, utils::EMIXER_TYPE mixer
             PM_LOG_INFO(MSGID_DEVICE_MANAGER, INIT_KVCOUNT, "eventMixerStatus : pulsemixer is connected");
             mObjAudioMixer->sendInternalDeviceInfo(true, internalSinkCount);
             mObjAudioMixer->sendInternalDeviceInfo(false, internalSourceCount);
-            for (auto it : mPhyInternalInfo)
-            {
-                for(auto &devices:it.second)
-                {
-                    if (devices.cardNumber != -1)
-                        loadInternalCard(devices);
-                }
-            }
-            for (auto &it : mPhyExternalInfo)
-            {
-                for(auto &devices:it.second)
-                {
-                    loadUnloadExternalCard(devices,true);
-                }
-            }
+            /* On the cards in the table, not on copies of them: that a card
+             * is loaded has to stay recorded, or it depends on whether PDM
+             * reported it before or after this connection whether the next
+             * one loads and announces it again. */
+            forEachCard(mPhyInternalInfo, [this](utils::CARD_INFO_T &card) {
+                if (card.cardNumber != -1)
+                    loadInternalCard(card);
+            });
+            forEachCard(mPhyExternalInfo, [this](utils::CARD_INFO_T &card) {
+                loadUnloadExternalCard(card, true);
+            });
+        }
+        else
+        {
+            /* PulseAudio has gone and its sinks with it, also the ones it
+             * had of its own (preloaded): load and announce every card again
+             * when it is back, so that audioRouter routes to them again. */
+            PM_LOG_INFO(MSGID_DEVICE_MANAGER, INIT_KVCOUNT, "eventMixerStatus : pulsemixer is gone, forgetting the loaded cards");
+            forgetLoadedCards(mPhyInternalInfo);
+            forgetLoadedCards(mPhyExternalInfo);
         }
      }
 }
