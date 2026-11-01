@@ -143,6 +143,35 @@ TEST(A2dpRestore, HeadsetBackByItselfIsLeftAlone)
     EXPECT_TRUE(restore.due().empty());
 }
 
+// What the Mindphone did on 2026-10-31 09:24:25 (systemctl restart
+// pulseaudio, music on the Nuraphone): PulseAudio went at 09:24:26,
+// bluetooth2 then repeated that the headset's A2DP was connected, PulseAudio
+// was back at 09:24:27 and only then was the A2DP reported gone. The
+// repeat must not take the headset off the list: it is connected again.
+TEST(A2dpRestore, RepeatedConnectedReportKeepsTheDropUndone)
+{
+    A2dpRestore restore;
+    restore.pulseGone({{kHeadset, kAdapter}}, 26000);
+    restore.a2dpBack(kHeadset);
+    EXPECT_FALSE(restore.pulseBack());
+    EXPECT_TRUE(restore.a2dpGone(kHeadset, 27300));
+    EXPECT_TRUE(restore.pending());
+    EXPECT_EQ(restore.due(), (Devices{{kHeadset, kAdapter}}));
+}
+
+// The same repeat while PulseAudio is still away and the drop comes before
+// it is back.
+TEST(A2dpRestore, RepeatedConnectedReportBeforeTheDropWhilePulseAudioIsAway)
+{
+    A2dpRestore restore;
+    restore.pulseGone({{kHeadset, kAdapter}}, 1000);
+    restore.a2dpBack(kHeadset);
+    restore.a2dpBack(kHeadset);
+    EXPECT_TRUE(restore.a2dpGone(kHeadset, 1500));
+    EXPECT_TRUE(restore.pulseBack());
+    EXPECT_EQ(restore.due(), (Devices{{kHeadset, kAdapter}}));
+}
+
 // A failed attempt is made again, up to MAX_ATTEMPTS in all.
 TEST(A2dpRestore, FailedAttemptIsRetriedThenGivenUp)
 {

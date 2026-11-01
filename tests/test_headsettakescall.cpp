@@ -160,3 +160,22 @@ TEST(StoredSetting, WhatTheUserSetWinsOverALateStoredValue)
 }
 
 }
+
+// The ringtone volume: the stored one replaces the policy's 100 at start,
+// and a volume the user set before it was read back is kept.
+TEST(StoredSetting, AStoredRingtoneVolumeReplacesTheDefault)
+{
+    StoredSetting<int> volume(100);
+    EXPECT_TRUE(volume.stored(4));
+    EXPECT_EQ(volume.value(), 4);
+    EXPECT_FALSE(volume.stored(4));
+}
+
+TEST(StoredSetting, ARingtoneVolumeSetBeforeTheStoredOneArrivesWins)
+{
+    StoredSetting<int> volume(100);
+    EXPECT_TRUE(volume.set(30));
+    EXPECT_FALSE(volume.stored(4));
+    EXPECT_EQ(volume.value(), 30);
+}
+
