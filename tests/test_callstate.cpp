@@ -282,6 +282,44 @@ TEST(CallState, MovingBetweenCallsIsNotATransition)
     EXPECT_FALSE(t.resetMute);
 }
 
+// The WhatsApp call on the Nuraphone, 2026-10-31: the "play" sent as the
+// headset's link closed was answered by an AVRCP pause from the headset.
+TEST(CallState, MusicPausedForACallOnTheHeadsetsLinkResumesOnceItIsDown)
+{
+    EXPECT_EQ(CallState::resumeAfterCall(true, true), CallState::Resume::Later);
+    EXPECT_GT(CallState::resumeDelayMs, 240u);
+}
+
+TEST(CallState, MusicPausedForACallOffTheHeadsetResumesAtOnce)
+{
+    EXPECT_EQ(CallState::resumeAfterCall(true, false), CallState::Resume::Now);
+}
+
+TEST(CallState, MusicNotPausedForTheCallIsNotResumed)
+{
+    EXPECT_EQ(CallState::resumeAfterCall(false, true), CallState::Resume::Never);
+    EXPECT_EQ(CallState::resumeAfterCall(false, false), CallState::Resume::Never);
+}
+
+TEST(CallState, AResumePutOffIsDoneWhenNothingChangedMeanwhile)
+{
+    EXPECT_TRUE(CallState::resumeStillDue(true, eCallMode_None));
+}
+
+// A headset going meanwhile clears what was paused for the call: the music
+// would come back out loud.
+TEST(CallState, AResumePutOffIsDroppedWhenTheHeadsetWent)
+{
+    EXPECT_FALSE(CallState::resumeStillDue(false, eCallMode_None));
+}
+
+// A new call meanwhile keeps the music paused; that call's end resumes it.
+TEST(CallState, AResumePutOffWaitsForANewCallToEnd)
+{
+    EXPECT_FALSE(CallState::resumeStillDue(true, eCallMode_Carrier));
+    EXPECT_FALSE(CallState::resumeStillDue(true, eCallMode_Voip));
+}
+
 } // namespace
 
 TEST(CallState, UnpluggingPausesTheMusic)

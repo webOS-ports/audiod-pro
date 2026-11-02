@@ -38,11 +38,18 @@ TEST(BtRing, TheRingtonesStayOnTheLoudspeakerOutsideACall)
     EXPECT_STREQ(BtRing::SPEAKER, "pcm_output");
 }
 
-TEST(BtRing, NothingMovedInACall)
+TEST(BtRing, NothingMovedInACarrierCall)
 {
     // A ring in a call is call waiting: it goes with the call.
     EXPECT_TRUE(BtRing::classes(eCallMode_Carrier).empty());
-    EXPECT_TRUE(BtRing::classes(eCallMode_Voip).empty());
+}
+
+// D2-7, 2026-10-31: a VoIP call reaches a headset over SCO through the HAL
+// (pcm_output), never over A2DP, so its classes stay on pcm_output; the
+// ringtones go with the call (call waiting).
+TEST(BtRing, AVoipCallKeepsItsOwnClassesOnPcmOutput)
+{
+    EXPECT_EQ(BtRing::classes(eCallMode_Voip), (std::vector<int>{evoipcall, evoipcall1}));
 }
 
 TEST(BtRing, OnlyABluetoothOutputIsFollowed)
@@ -76,9 +83,9 @@ TEST(BtRing, NoOverrideInACallOrWithoutTheHeadset)
 {
     BtRing r;
     EXPECT_FALSE(r.classOverride(eCallMode_None).active());
+    EXPECT_FALSE(r.classOverride(eCallMode_Voip).active());
     r.outputIs(BT);
     EXPECT_FALSE(r.classOverride(eCallMode_Carrier).active());
-    EXPECT_FALSE(r.classOverride(eCallMode_Voip).active());
     // and an inactive override is the empty one the router compares with
     EXPECT_EQ(r.classOverride(eCallMode_Carrier), ClassRoute::Override{});
     r.outputIs("pcm_output");
@@ -116,7 +123,7 @@ TEST(BtRing, TheRingtonesGoToTheLoudspeakerTheRestToTheHeadset)
     EXPECT_EQ(runs[1], (ClassRoute::Range{eringtones, eringtones, "pcm_output"}));
 }
 
-TEST(BtRing, InACallTheWholeRangeGoesToTheHeadset)
+TEST(BtRing, InACarrierCallTheWholeRangeGoesToTheHeadset)
 {
     BtRing r;
     r.outputIs(BT);
@@ -169,7 +176,8 @@ TEST(BtRingAlerts, OnTheAlertsStayOnTheLoudspeakerOutsideACall)
     EXPECT_EQ(BtRing::classes(eCallMode_None, true), (std::vector<int>{ealerts, eringtones}));
     EXPECT_EQ(BtRing::classes(eCallMode_None, false), (std::vector<int>{eringtones}));
     EXPECT_TRUE(BtRing::classes(eCallMode_Carrier, true).empty());
-    EXPECT_TRUE(BtRing::classes(eCallMode_Voip, true).empty());
+    // a VoIP call holds its own classes whatever the setting
+    EXPECT_EQ(BtRing::classes(eCallMode_Voip, true), (std::vector<int>{evoipcall, evoipcall1}));
 }
 
 TEST(BtRingAlerts, OnTheOverrideHoldsForTheHeadsetOutsideACall)
@@ -192,7 +200,8 @@ TEST(BtRingAlerts, OnNothingMovesInACallOrWithoutTheHeadset)
     EXPECT_EQ(r.classOverride(eCallMode_None), ClassRoute::Override{});
     r.outputIs(BT);
     EXPECT_EQ(r.classOverride(eCallMode_Carrier), ClassRoute::Override{});
-    EXPECT_EQ(r.classOverride(eCallMode_Voip), ClassRoute::Override{});
+    // a VoIP call moves only its own classes, never the alerts
+    EXPECT_EQ(r.classOverride(eCallMode_Voip).classes, (std::vector<int>{evoipcall, evoipcall1}));
     for (const char *other : {"pcm_output", "usb_speaker0", "ring_speaker_usb"})
     {
         r.outputIs(other);
@@ -240,4 +249,163 @@ TEST(BtRingAlerts, TurnedOffTheAlertsGoBackToTheHeadset)
     EXPECT_EQ(to[eringtones], "pcm_output");
 }
 
+TEST(BtRing, InAVoipCallTheCallsClassesGoToPcmOutputTheRestToTheHeadset)
+{
+    BtRing r;
+    r.outputIs(BT);
+    const ClassRoute::Override o = r.classOverride(eCallMode_Voip);
+    EXPECT_TRUE(o.active());
+    EXPECT_EQ(o.whileOutput, BT);
+    EXPECT_EQ(o.target, "pcm_output");
+    std::vector<std::string> to(eVirtualSink_Last + 1);
+    for (const auto &run : ClassRoute::split(eVirtualSink_First, eVirtualSink_Last, BT, o))
+        for (int c = run.start; c <= run.end; c++)
+            to[c] = run.sink;
+    for (int c = eVirtualSink_First; c <= eVirtualSink_Last; c++)
+    {
+        const bool call = (c == evoipcall || c == evoipcall1);
+        EXPECT_EQ(to[c], call ? "pcm_output" : BT) << c;
+    }
+}
+
+// With the alerts on the loudspeaker, a VoIP call still moves only its
+// own classes: the alerts and the ringtones stay in the headset.
+TEST(BtRingAlerts, InAVoipCallOnlyTheCallsClassesLeaveTheHeadset)
+{
+    BtRing r;
+    r.setAlertsOnSpeaker(true);
+    r.outputIs(BT);
+    const auto to = routed(ClassRoute::split(eVirtualSink_First, eVirtualSink_Last, BT,
+                                             r.classOverride(eCallMode_Voip)));
+    for (int c = eVirtualSink_First; c <= eVirtualSink_Last; c++)
+    {
+        const bool call = (c == evoipcall || c == evoipcall1);
+        EXPECT_EQ(to[c], call ? "pcm_output" : BT) << c;
+    }
+}
+
+// The headset coming back mid-call (D2-7: HFP at 07:40:08, A2DP at
+// 07:40:09) finds the override already holding for its sink.
+TEST(BtRing, InAVoipCallTheOverrideOutlivesTheHeadset)
+{
+    BtRing r;
+    r.outputIs(BT);
+    r.outputIs("pcm_output");
+    EXPECT_EQ(r.output(), "");
+    EXPECT_EQ(r.lastOutput(), BT);
+    const ClassRoute::Override o = r.classOverride(eCallMode_Voip);
+    EXPECT_TRUE(o.active());
+    EXPECT_EQ(o.whileOutput, BT);
+    // outside a call, the ringtones follow only a headset that is there
+    EXPECT_FALSE(r.classOverride(eCallMode_None).active());
+    // and routed to pcm_output meanwhile, nothing is split
+    const auto runs = ClassRoute::split(eVirtualSink_First, eVirtualSink_Last, "pcm_output", o);
+    ASSERT_EQ(runs.size(), 1u);
+}
+
+TEST(BtRing, TheLastHeadsetIsTheNewestBluetoothOutput)
+{
+    BtRing r;
+    EXPECT_EQ(r.lastOutput(), "");
+    r.outputIs("usb_speaker0");
+    EXPECT_EQ(r.lastOutput(), "");
+    r.outputIs(BT);
+    r.outputIs("bluez_sink.00_11_22_33_44_55.a2dp_sink");
+    r.outputIs("");
+    EXPECT_EQ(r.lastOutput(), "bluez_sink.00_11_22_33_44_55.a2dp_sink");
+    EXPECT_EQ(r.classOverride(eCallMode_Voip).whileOutput, "bluez_sink.00_11_22_33_44_55.a2dp_sink");
+}
+
+}
+
+namespace {
+
+// Every class of the whole range, where the router sends it.
+std::vector<std::string> everyClassTo(const BtRing &r, ECallMode mode, const std::string &output)
+{
+    std::vector<std::string> to(eVirtualSink_Last + 1);
+    for (const auto &run : ClassRoute::split(eVirtualSink_First, eVirtualSink_Last, output,
+                                             r.classOverride(mode)))
+        for (int c = run.start; c <= run.end && c <= eVirtualSink_Last; c++)
+            to[c] = run.sink;
+    return to;
+}
+
+void expectAllOn(const std::vector<std::string> &to, const std::string &sink)
+{
+    for (int c = eVirtualSink_First; c <= eVirtualSink_Last; c++)
+        EXPECT_EQ(to[c], sink) << c;
+}
+
+}
+
+// On a headset's SCO link, a call takes every class off its A2DP sink:
+// the headset's A2DP stream starting and stopping broke the call's own
+// stream (2026-10-31 09:31:12, 09:31:28).
+TEST(BtRingOnHeadsetLink, AVoipCallSendsNothingToA2dp)
+{
+    BtRing r;
+    r.outputIs(BT);
+    r.setOnHeadsetLink(true);
+    EXPECT_TRUE(r.onHeadsetLink());
+    expectAllOn(everyClassTo(r, eCallMode_Voip, BT), "pcm_output");
+}
+
+TEST(BtRingOnHeadsetLink, ACarrierCallSendsNothingToA2dp)
+{
+    BtRing r;
+    r.outputIs(BT);
+    r.setOnHeadsetLink(true);
+    expectAllOn(everyClassTo(r, eCallMode_Carrier, BT), "pcm_output");
+    // off the link a carrier call still moves nothing
+    r.setOnHeadsetLink(false);
+    expectAllOn(everyClassTo(r, eCallMode_Carrier, BT), BT);
+}
+
+TEST(BtRingOnHeadsetLink, TheWholeRangeAndNothingElse)
+{
+    std::vector<int> all;
+    for (int c = eVirtualSink_First; c <= eVirtualSink_Last; c++)
+        all.push_back(c);
+    EXPECT_EQ(BtRing::classes(eCallMode_Voip, false, true), all);
+    EXPECT_EQ(BtRing::classes(eCallMode_Carrier, true, true), all);
+    // outside a call the link changes nothing
+    EXPECT_EQ(BtRing::classes(eCallMode_None, false, true), (std::vector<int>{eringtones}));
+    EXPECT_EQ(BtRing::classes(eCallMode_None, true, true), (std::vector<int>{ealerts, eringtones}));
+}
+
+// The Nuraphone on 2026-10-31 09:32:45: its SCO link came up in a WhatsApp
+// call, then its A2DP sink came back. Nothing goes to that sink while the
+// link is up; once it is down only the call's own classes stay off it,
+// and after the call only the ringtones.
+TEST(BtRingOnHeadsetLink, AHeadsetReconnectingMidCallGetsNothingUntilTheLinkIsDown)
+{
+    BtRing r;
+    r.outputIs(BT);
+    r.outputIs("pcm_output");               // the headset went (09:32:15)
+    r.setOnHeadsetLink(true);               // its SCO link is up (09:32:45.85)
+    expectAllOn(everyClassTo(r, eCallMode_Voip, BT), "pcm_output");
+    r.outputIs(BT);                         // its A2DP sink is back (09:32:46.70)
+    expectAllOn(everyClassTo(r, eCallMode_Voip, BT), "pcm_output");
+    r.setOnHeadsetLink(false);              // the link closed, the call goes on
+    const auto to = everyClassTo(r, eCallMode_Voip, BT);
+    for (int c = eVirtualSink_First; c <= eVirtualSink_Last; c++)
+    {
+        const bool call = (c == evoipcall || c == evoipcall1);
+        EXPECT_EQ(to[c], call ? "pcm_output" : BT) << c;
+    }
+    EXPECT_EQ(r.classOverride(eCallMode_None).classes, (std::vector<int>{eringtones}));
+}
+
+// A carrier call on the link holds for the headset that carried the audio
+// last as well, gone or not.
+TEST(BtRingOnHeadsetLink, ACarrierCallHoldsForTheLastHeadset)
+{
+    BtRing r;
+    r.outputIs(BT);
+    r.outputIs("");
+    r.setOnHeadsetLink(true);
+    const ClassRoute::Override o = r.classOverride(eCallMode_Carrier);
+    EXPECT_TRUE(o.active());
+    EXPECT_EQ(o.whileOutput, BT);
 }

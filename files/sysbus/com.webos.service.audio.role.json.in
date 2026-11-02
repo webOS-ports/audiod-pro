@@ -11,6 +11,7 @@
         {
             "service": "com.webos.service.audio",
             "outbound": [
+                "com.palm.sleep",
                 "com.palm.telephony",
                 "com.webos.service.audio",
                 "com.webos.service.audiooutput",

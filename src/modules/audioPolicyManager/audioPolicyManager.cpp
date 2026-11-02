@@ -377,8 +377,11 @@ void AudioPolicyManager::initStreamVolume()
             PM_LOG_ERROR(MSGID_POLICY_MANAGER, INIT_KVCOUNT,\
                 "AudioPolicyManager::initStreamVolume volume could not be set for stream:%s",\
                 elements.streamType.c_str());
+        /* Unmuted, but for a call that is up: the streams a restarted
+         * PulseAudio brings back are muted again when they open (muteSink),
+         * this keeps those it has already reported muted too. */
         if (mObjAudioMixer)
-            mObjAudioMixer->muteSink(sink, false, nullptr, nullptr, nullptr, nullptr);
+            mObjAudioMixer->muteSink(sink, callMutes(sink) ? 1 : 0, nullptr, nullptr, nullptr, nullptr);
     }
     for (const auto &elements : mSourceVolumePolicyInfo)
     {
@@ -1296,11 +1299,14 @@ bool AudioPolicyManager::muteSink(EVirtualAudioSink audioSink, const int& muteSt
     PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT, "AudioPolicyManager:muteSink:%d for sink:%d, \
      mixerType = %d", muteStatus, (int)audioSink, (int)mixerType);
     bool returnStatus = false;
+    /* The user's mute (or whoever asked), or the call's: a stream opening
+     * during a call, or a class unmuted during one, stays silent. */
+    const int mixerMute = (muteStatus || callMutes(audioSink)) ? 1 : 0;
     if (mObjAudioMixer)
     {
         if (utils::ePulseMixer == mixerType)
         {
-            if (mObjAudioMixer->muteSink(audioSink, muteStatus, lshandle, message, ctx, cb))
+            if (mObjAudioMixer->muteSink(audioSink, mixerMute, lshandle, message, ctx, cb))
                 returnStatus = true;
             else
                 PM_LOG_ERROR(MSGID_POLICY_MANAGER, INIT_KVCOUNT, "AudioPolicyManager:muteSink failed");
@@ -1579,6 +1585,36 @@ void AudioPolicyManager::applyDuckLevel()
         const int volume = elements.isPolicyInProgress ? elements.policyVolume : elements.currentVolume;
         setVolume(getSinkType(elements.streamType), volume, elements.mixerType,
                   nullptr, nullptr, nullptr, nullptr);
+    }
+}
+
+bool AudioPolicyManager::callMutes(EVirtualAudioSink audioSink)
+{
+    return mCallMediaMuted && IsValidVirtualSink(audioSink) &&
+           CallMediaMute::mutedInCall(getStreamType(audioSink));
+}
+
+void AudioPolicyManager::setCallMediaMute(bool callUp)
+{
+    if (callUp == mCallMediaMuted)
+        return;
+    mCallMediaMuted = callUp;
+    PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT,
+        "setCallMediaMute: media classes %s for the call", callUp ? "muted" : "given back");
+    for (const auto &elements : mVolumePolicyInfo)
+    {
+        if (!CallMediaMute::mutedInCall(elements.streamType))
+            continue;
+        /* Not only while isStreamActive: that is one flag for every stream
+         * of the class, cleared by the first of two that closes, and a
+         * corked stream (paused, or a GStreamer one prerolling) has not
+         * been reported at all. module-palm-policy mutes or unmutes every
+         * sink-input of the class it has, and with none it does nothing. */
+        const bool mute = CallMediaMute::effective(elements.streamType, elements.muteStatus, callUp);
+        PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT,
+            "setCallMediaMute: %s -> %d", elements.streamType.c_str(), (int) mute);
+        muteSink(getSinkType(elements.streamType), mute ? 1 : 0, utils::ePulseMixer,
+                 nullptr, nullptr, nullptr, nullptr);
     }
 }
 
@@ -3057,7 +3093,8 @@ AudioPolicyManager::AudioPolicyManager(ModuleConfig* const pConfObj):mObjModuleM
                                                                      mDuckDepth(DuckPolicy::levelForDb(DuckPolicy::kDefaultDuckDb)),\
                                                                      mDuckLevel(0),\
                                                                      mDuckTarget(0),\
-                                                                     mDuckTimer(0)
+                                                                     mDuckTimer(0),\
+                                                                     mCallMediaMuted(false)
 {
     PM_LOG_DEBUG("AudioPolicyManager: constructor");
     mObjModuleManager = ModuleManager::getModuleManagerInstance();

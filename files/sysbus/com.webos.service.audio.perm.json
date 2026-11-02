@@ -3,11 +3,13 @@
         "settings.query",
         "settings.management",
         "bluetooth.query",
+        "bluetooth.management",
         "physicaldevice.query",
         "audiooutput.management",
         "audio.query",
         "audio.operation",
         "mediacontroller.operation",
-        "mediacontroller.management"
+        "mediacontroller.management",
+        "sleep.operation"
     ]
 }

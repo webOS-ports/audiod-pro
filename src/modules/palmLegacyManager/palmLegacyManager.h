@@ -19,6 +19,7 @@
 #ifndef _PALM_LEGACY_MANAGER_H_
 #define _PALM_LEGACY_MANAGER_H_
 
+#include <array>
 #include <list>
 #include <set>
 #include <string>
@@ -40,6 +41,10 @@
 #include "videoSpeaker.h"
 #include "btCall.h"
 #include "hfpAgent.h"
+#include "callVolume.h"
+#include "voiceVolumeStream.h"
+#include "suspendVoter.h"
+#include "paStreamQuery.h"
 
 /*
  * palmLegacyManager -- serves the Palm-era com.palm.audio API on top of audiod.
@@ -79,7 +84,8 @@
  * the two legacy names need their own handles, registered here.
  */
 
-class PalmLegacyManager : public ModuleInterface, private HfpAgent::Listener
+class PalmLegacyManager : public ModuleInterface, private HfpAgent::Listener,
+                          private SuspendVoter::Host
 {
     public:
         /* Where audio should come out for a routable category. Named after the
@@ -144,11 +150,11 @@ class PalmLegacyManager : public ModuleInterface, private HfpAgent::Listener
         ECallMode mCallMode;
         ECallMode mAppliedCallMode;
         EPhoneRoute mAppliedRoute;
-        bool mAppliedRing;
+        bool mAppliedRing;      //!< speakerWanted() as last applied
         /* Who has reported which calls; mCallMode follows from it. */
         CallState mCallState;
-        /* Whether a ringtone or alarm is playing: with headphones in, it
-         * rings on the loudspeaker as well. */
+        /* Whether a ringtone, an alarm or an alert is playing, and music:
+         * with headphones in, they ring on the loudspeaker as well. */
         RingState mRingState;
         /* Whether a video call has put itself on the loudspeaker. */
         VideoSpeaker mVideoSpeaker;
@@ -217,6 +223,38 @@ class PalmLegacyManager : public ModuleInterface, private HfpAgent::Listener
          * Settings' "Alerts on phone speaker", sound/bluetoothAlertsOnSpeaker,
          * off by default (see btRing.h). */
         StoredSetting<bool> mAlertsOnSpeaker;
+        /* com.palm.audio/ringtone's volume and mute, the volume of the
+         * pringtones stream, which the Phone app rings in: kept as
+         * sound/ringtoneVolume and sound/ringtoneMuted, so a restart does
+         * not ring at the policy's 100 again. */
+        StoredSetting<int> mRingtoneVolume;
+        StoredSetting<bool> mRingtoneMuted;
+        void applyRingtoneVolume();
+        /* The slider sends a volume for every step it moves: what it ends
+         * on is stored, RINGTONE_STORE_DELAY_MS after the last one. */
+        void storeRingtoneVolume(bool volume, bool muted);
+        void writeRingtoneVolume();
+        static gboolean storeRingtoneVolumeCb(gpointer data);
+        guint mStoreRingtoneTimer = 0;
+        bool mStoreRingtoneVolume = false;
+        bool mStoreRingtoneMuted = false;
+        /* The in-call volume, one for each route a call is heard on
+         * (callVolume.h), kept as sound/callVolumeEarpiece and the others;
+         * the volume keys move it during a call, through /phone. */
+        CallVolume mCallVolume;
+        /* The carrier call's handle on the HAL voice volume, while one is
+         * up, on mVoiceSink: the droid card's primary sink. */
+        VoiceVolumeStream mVoiceStream;
+        std::string mVoiceSink;
+        static CallVolume::Route callVolumeRouteOf(EPhoneRoute route);
+        CallVolume::Route callVolumeRoute() const;
+        void applyCallVolume();
+        void callVolumeChanged(CallVolume::Route route);
+        void storeCallVolume(CallVolume::Route route);
+        void writeCallVolume();
+        static gboolean storeCallVolumeCb(gpointer data);
+        guint mStoreCallVolumeTimer = 0;
+        std::array<bool, CallVolume::kRoutes> mStoreCallVolume{};
         void readStoredSettings();
         void storeSettings(const SettingsRequest::Change &change);
         void applySettings();
@@ -228,6 +266,11 @@ class PalmLegacyManager : public ModuleInterface, private HfpAgent::Listener
          * when the call it was for has already ended. */
         bool mResumeMediaAfterCall;
         unsigned int mMediaGeneration;
+        /* The resume after a call on a Bluetooth headset's link, put off
+         * until the link is down (CallState::resumeAfterCall). */
+        guint mResumeMediaTimer;
+        static gboolean resumeMediaCb(gpointer userdata);
+        void cancelResumeMedia();
 
         static LegacyCategory sCategories[];
 
@@ -252,6 +295,39 @@ class PalmLegacyManager : public ModuleInterface, private HfpAgent::Listener
         PaReconnect mPaReconnect;
         guint mPaReconnectTimer;
 
+        /* Answering sleepd's suspendRequest and prepareSuspend: see
+         * suspendVoter.h. */
+        SuspendVoter mSuspendVoter;
+        PaStreamQuery mVoteQuery;
+        void *mSleepdWatch;
+        LSMessageToken mSleepdIdentify;
+        struct VoteTimer
+        {
+            PalmLegacyManager *self;
+            SuspendVoter::Timer timer;
+            guint source;
+        };
+        std::array<VoteTimer, static_cast<size_t>(SuspendVoter::Timer::Count)> mVoteTimers;
+        void startSuspendVote();
+        void stopSuspendVote();
+        void cancelIdentify();
+        static bool _sleepdStatusCb(LSHandle *sh, const char *service, bool connected, void *ctx);
+        static bool _sleepdIdentifyCb(LSHandle *sh, LSMessage *reply, void *ctx);
+        static bool _sleepdSignalCb(LSHandle *sh, LSMessage *message, void *ctx);
+        static gboolean voteTimerCb(gpointer data);
+        static void paHoldCb(pa_context *c, int success, void *userdata);
+        /* SuspendVoter::Host; not marked override, as with HfpAgent::Listener. */
+        void identify();
+        void call(const char *method, const std::string &payload);
+        bool queryStreams();
+        void cancelQuery();
+        void holdAudio(bool hold);
+        bool inCall() const;
+        uint64_t nowMs() const;
+        void startTimer(SuspendVoter::Timer timer, unsigned ms);
+        void stopTimer(SuspendVoter::Timer timer);
+        void log(bool warning, const std::string &message);
+
         /* One in-flight routing request. Heap-allocated because the PulseAudio
          * card/sink/source walk is a chain of async callbacks. mPendingCards
          * keeps the request alive across a profile switch that overlaps the
@@ -263,7 +339,7 @@ class PalmLegacyManager : public ModuleInterface, private HfpAgent::Listener
             PalmLegacyManager *self;
             ECallMode mode;
             EPhoneRoute route;
-            bool ring;
+            bool ring;      //!< RingState::speakerWanted(): the jack gets the loudspeaker too
             int refs;
         };
 
@@ -338,7 +414,7 @@ class PalmLegacyManager : public ModuleInterface, private HfpAgent::Listener
         /* Pause whatever is playing through com.webos.service.mediacontroller,
          * and, for a call, play it again once the call is over. */
         void pauseMedia(bool resumeAfterCall);
-        void resumeMedia();
+        void resumeMedia(bool onHeadsetLink);
         void sendMediaKey(const char *keyEvent);
         static bool _mediaSessionsCb(LSHandle *sh, LSMessage *reply, void *ctx);
         static bool _mediaPlayStatusCb(LSHandle *sh, LSMessage *reply, void *ctx);
@@ -385,7 +461,8 @@ class PalmLegacyManager : public ModuleInterface, private HfpAgent::Listener
         static bool _masterVolumeStatusCb(LSHandle *sh, LSMessage *reply, void *ctx);
 
         pbnjson::JValue rootStatus() const;
-        pbnjson::JValue categoryStatus(const LegacyCategory *cat, const char *action) const;
+        pbnjson::JValue categoryStatus(const LegacyCategory *cat, const char *action,
+                                       bool volumeChanged = false) const;
 
         void notifyStatusSubscribers();
         void notifyCategory(const LegacyCategory *cat, const char *action);

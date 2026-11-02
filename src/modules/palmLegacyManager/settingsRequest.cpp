@@ -16,6 +16,8 @@
 
 #include "settingsRequest.h"
 
+#include <cstdint>
+
 #include "messageUtils.h"
 
 /* REQUIRED() in SCHEMA_n() only declares a property: SCHEMA_1(REQUIRED(x,
@@ -68,4 +70,26 @@ std::optional<SettingsRequest::Change> SettingsRequest::parseSet(const char *pay
     if (!parser.parse(payload, schema))
         return std::nullopt;
     return change(parser.getDom());
+}
+
+std::optional<int> SettingsRequest::storedVolume(const pbnjson::JValue &value)
+{
+    /* Only a whole number: asNumber<int> would round 4.5 down and take a
+     * string of digits. */
+    if (!value.isNumber())
+        return std::nullopt;
+    int64_t whole = 0;
+    if (value.asNumber(whole) != CONV_OK)
+        return std::nullopt;
+    if (whole < 0 || whole > 100)
+        return std::nullopt;
+    return static_cast<int>(whole);
+}
+
+std::optional<bool> SettingsRequest::storedFlag(const pbnjson::JValue &value)
+{
+    bool flag = false;
+    if (!value.isBoolean() || value.asBool(flag) != CONV_OK)
+        return std::nullopt;
+    return flag;
 }

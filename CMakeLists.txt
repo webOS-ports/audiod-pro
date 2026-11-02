@@ -140,6 +140,10 @@ SET (modules_files
         src/modules/palmLegacyManager/btRing.cpp
         src/modules/palmLegacyManager/settingsRequest.cpp
         src/modules/palmLegacyManager/legacyRequest.cpp
+        src/modules/palmLegacyManager/callVolume.cpp
+        src/modules/palmLegacyManager/voiceVolumeStream.cpp
+        src/modules/palmLegacyManager/suspendVoter.cpp
+        src/modules/palmLegacyManager/paStreamQuery.cpp
         src/modules/lunaEventSubscriber/lunaEventSubscriber.cpp
         src/modules/masterVolumeManager/OSEMasterVolumeManager.cpp
         src/modules/masterVolumeManager/volumeTarget.cpp
@@ -147,9 +151,11 @@ SET (modules_files
         src/modules/deviceManager/udevDeviceManager.cpp
         src/modules/audioPolicyManager/audioPolicyManager.cpp
         src/modules/audioPolicyManager/duckPolicy.cpp
+        src/modules/audioPolicyManager/callMediaMute.cpp
         src/modules/audioPolicyManager/volumePolicyInfoParser.cpp
         src/modules/bluetoothManager/bluetoothManager.cpp
         src/modules/bluetoothManager/btState.cpp
+        src/modules/bluetoothManager/a2dpRestore.cpp
         src/modules/connectionManager/connectionManager.cpp
         src/modules/masterVolumeManager/masterVolumeManager.cpp
         src/modules/settingsServiceManager/settingsServiceManager.cpp

@@ -143,4 +143,37 @@ TEST(SettingsRequest, AChangeNeedsASettingAndNoBadOne)
     EXPECT_STREQ(SETTING_ALERTS_ON_SPEAKER, "bluetoothAlertsOnSpeaker");
 }
 
+// The ringtone volume (Settings' "Ringtone Volume", com.palm.audio/ringtone)
+// rang at the policy's 100 after every restart: the 4 set at 09:57:51 on
+// 2026-10-31 was not there for a ring after the reboot. What is stored is
+// what setVolume takes, a whole number from 0 to 100.
+TEST(RingtoneVolume, AStoredVolumeIsAWholeNumberFrom0To100)
+{
+    EXPECT_EQ(SettingsRequest::storedVolume(pbnjson::JValue(4)), std::optional<int>(4));
+    EXPECT_EQ(SettingsRequest::storedVolume(pbnjson::JValue(0)), std::optional<int>(0));
+    EXPECT_EQ(SettingsRequest::storedVolume(pbnjson::JValue(100)), std::optional<int>(100));
+    EXPECT_EQ(SettingsRequest::storedVolume(pbnjson::JValue(101)), std::nullopt);
+    EXPECT_EQ(SettingsRequest::storedVolume(pbnjson::JValue(-1)), std::nullopt);
+    EXPECT_EQ(SettingsRequest::storedVolume(pbnjson::JValue(4.5)), std::nullopt);
+    EXPECT_EQ(SettingsRequest::storedVolume(pbnjson::JValue("4")), std::nullopt);
+    EXPECT_EQ(SettingsRequest::storedVolume(pbnjson::JValue(true)), std::nullopt);
+    // a key never stored: settingsservice leaves it out
+    EXPECT_EQ(SettingsRequest::storedVolume(pbnjson::Object()["ringtoneVolume"]), std::nullopt);
+}
+
+TEST(RingtoneVolume, AStoredMuteIsABoolean)
+{
+    EXPECT_EQ(SettingsRequest::storedFlag(pbnjson::JValue(true)), std::optional<bool>(true));
+    EXPECT_EQ(SettingsRequest::storedFlag(pbnjson::JValue(false)), std::optional<bool>(false));
+    EXPECT_EQ(SettingsRequest::storedFlag(pbnjson::JValue(1)), std::nullopt);
+    EXPECT_EQ(SettingsRequest::storedFlag(pbnjson::JValue("true")), std::nullopt);
+    EXPECT_EQ(SettingsRequest::storedFlag(pbnjson::Object()["ringtoneMuted"]), std::nullopt);
+}
+
+TEST(RingtoneVolume, KeptUnderItsOwnKeys)
+{
+    EXPECT_STREQ(SETTING_RINGTONE_VOLUME, "ringtoneVolume");
+    EXPECT_STREQ(SETTING_RINGTONE_MUTED, "ringtoneMuted");
+}
+
 } // namespace

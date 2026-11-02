@@ -100,6 +100,32 @@ public:
     };
     static Transition transition(ECallMode from, ECallMode to);
 
+    //! When the music paused for a call plays again after it.
+    enum class Resume
+    {
+        Never,      //!< nothing was paused for the call
+        Now,
+        Later       //!< after resumeDelayMs, see resumeAfterCall()
+    };
+    //! The last call ended. pausedForCall: media was paused for it.
+    //! onHeadsetLink: the call was on a Bluetooth headset's SCO link, which
+    //! audiod has only just closed.
+    //!
+    //! A "playing" reaching the headset (AVRCP) while that link is still
+    //! going down made a headset (a Nuraphone, 2026-10-31) send a pause of
+    //! its own some 50 ms later, which stopped the music again. The phone
+    //! app's cellular calls did not show it because the Music app resumes
+    //! those itself, on oFono's call end, before the call mode changes here.
+    static Resume resumeAfterCall(bool pausedForCall, bool onHeadsetLink);
+    //! How long Resume::Later waits: several times the 60-240 ms the headset
+    //! took to send its pause.
+    static constexpr unsigned resumeDelayMs = 1500;
+    //! Whether a resume put off with Resume::Later is still to be done when
+    //! its time comes: the music is still paused for the call (a headset
+    //! that went meanwhile cancels it), and no new call has started (whose
+    //! end resumes it instead).
+    static bool resumeStillDue(bool pausedForCall, ECallMode mode);
+
     //! What has to happen when the headphones are unplugged.
     struct Unplug
     {
