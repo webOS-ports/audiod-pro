@@ -4,7 +4,7 @@
         {
             "streamType": "palerts",
             "policyVolume":50,
-            "priority":3,
+            "priority":2,
             "group":1,
             "defaultVolume":100,
             "maxVolume":100,
@@ -32,7 +32,7 @@
         {
             "streamType": "pringtones",
             "policyVolume":50,
-            "priority":3,
+            "priority":2,
             "group":2,
             "defaultVolume":100,
             "maxVolume":100,
