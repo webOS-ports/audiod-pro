@@ -67,7 +67,7 @@ bool AudioMixer::readyToProgram()
 
 utils::vectorVirtualSink AudioMixer::getActiveStreams()
 {
-    PM_LOG_INFO(MSGID_AUDIO_MIXER, INIT_KVCOUNT,\
+    PM_LOG_DEBUG(\
         "AudioMixer:: getActiveStreams");
     return mActiveStreams;
 }
@@ -138,7 +138,7 @@ void AudioMixer::removeAudioSink(EVirtualAudioSink audioSink, utils::EMIXER_TYPE
     else
         PM_LOG_ERROR(MSGID_AUDIO_MIXER, INIT_KVCOUNT,\
            "AudioMixer:: removeAudioSink invalid mixer type");
-    PM_LOG_INFO(MSGID_AUDIO_MIXER, INIT_KVCOUNT,\
+    PM_LOG_DEBUG(\
         "AudioMixer:: removeAudioSink active streams:%zu pulse streams:%zu umi streams:%zu",\
         mActiveStreams.size(), mPulseStreams.size(), mUmiStreams.size());
 }
@@ -167,7 +167,7 @@ void AudioMixer::addAudioSink(EVirtualAudioSink audioSink, utils::EMIXER_TYPE mi
     else
         PM_LOG_ERROR(MSGID_AUDIO_MIXER, INIT_KVCOUNT,\
            "AudioMixer:: addAudioSink invalid mixer type");
-    PM_LOG_INFO(MSGID_AUDIO_MIXER, INIT_KVCOUNT,\
+    PM_LOG_DEBUG(\
         "AudioMixer:: addAudioSink active streams:%zu pulse streams:%zu umi streams:%zu",\
         mActiveStreams.size(), mPulseStreams.size(), mUmiStreams.size());
 }
@@ -240,7 +240,7 @@ void AudioMixer::callBackMixerStatus(const bool& mixerStatus, utils::EMIXER_TYPE
 void AudioMixer::callBackSinkStatus(const std::string& source, const std::string& sink, EVirtualAudioSink audioSink, \
               utils::ESINK_STATUS sinkStatus, utils::EMIXER_TYPE mixerType, const int& sinkIndex, const std::string& trackId)
 {
-    PM_LOG_INFO(MSGID_AUDIO_MIXER, INIT_KVCOUNT,\
+    PM_LOG_DEBUG(\
                 "callBackSinkStatus::source:%s sink:%s sinkId:%d sinkStatus:%d mixerType:%d sinkIndex:%d, app : %s",\
                 source.c_str(), sink.c_str(), (int)audioSink, (int)sinkStatus, (int)mixerType,\
                 sinkIndex, trackId.c_str());
@@ -593,7 +593,7 @@ bool AudioMixer::setMute(const char* deviceName, const int& mutestatus, LSHandle
 
 bool AudioMixer::muteSink(const int& sink, const int& mutestatus, LSHandle *lshandle, LSMessage *message, void *ctx, PulseCallBackFunc cb)
 {
-    PM_LOG_INFO(MSGID_AUDIO_MIXER, INIT_KVCOUNT, "AudioMixer: muteSink");
+    PM_LOG_DEBUG("AudioMixer: muteSink");
     if (mObjPulseAudioMixer)
         return mObjPulseAudioMixer->muteSink(sink, mutestatus, lshandle, message, ctx, cb);
     else

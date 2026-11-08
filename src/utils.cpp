@@ -35,7 +35,7 @@ void utils::LSMessageResponse(LSHandle* handle, LSMessage * message, const char*
     CLSError lserror;
     if (message)
     {
-        PM_LOG_INFO(MSGID_PARSE_JSON, INIT_KVCOUNT,"AudioD response with params:'%s'", reply);
+        PM_LOG_DEBUG("AudioD response with params:'%s'", reply);
         if (utils::eLSReply == eType)
         {
             if (handle)

@@ -134,7 +134,7 @@ bool SystemSoundsManager::_playFeedback(LSHandle *lshandle, LSMessage *message, 
 
     if (msg.get("override", override))
         override = true;
-    PM_LOG_INFO(MSGID_SYSTEMSOUND_MANAGER, INIT_KVCOUNT, \
+    PM_LOG_DEBUG(\
         "%s override = %d\n", __FUNCTION__, override);
 
     if (!audioMixerObj)

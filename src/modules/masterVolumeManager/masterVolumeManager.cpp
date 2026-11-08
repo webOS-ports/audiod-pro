@@ -77,7 +77,7 @@ bool MasterVolumeManager::_getVolume(LSHandle *lshandle, LSMessage *message, voi
     std::string reply = STANDARD_JSON_SUCCESS;
     if (mMasterVolumeClientInstance)
     {
-        PM_LOG_INFO(MSGID_MASTER_VOLUME_MANAGER, INIT_KVCOUNT, "MasterVolume: getVolume call to master client object is success");
+        PM_LOG_DEBUG("MasterVolume: getVolume call to master client object is success");
         mMasterVolumeClientInstance->getVolume(lshandle, message, ctx);
     }
     else

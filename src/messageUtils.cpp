@@ -74,7 +74,7 @@ bool LSMessageJsonParser::parse(const char * callerFunction,
         context = "";
 
     if (logOption != eLogOption_DontLogMessage)
-        PM_LOG_INFO(MSGID_PARSE_JSON, INIT_KVCOUNT,\
+        PM_LOG_DEBUG(\
             "%s%s: got '%s'", callerFunction, context, payload);
     if (!mParser.parse(payload, mSchema))
     {

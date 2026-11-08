@@ -89,7 +89,7 @@ extern const char * STANDARD_JSON_SUCCESS;
 
 // Test the name of a json parameter to determine if it's a system parameter that we should ignore. Pass a (char *)
 #define IS_SYSTEM_PARAMETER(x)    ((x) && *(x) == '$')
-#define SYSTEM_PARAMETERS "\"$activity\":{\"type\":\"object\",\"optional\":true}"
+#define SYSTEM_PARAMETERS "\"$activity\":{\"type\":\"object\"}"
 
 // Build a schema as a const char * string without any execution overhead
 #define SCHEMA_ANY                        "{}"
@@ -104,7 +104,7 @@ extern const char * STANDARD_JSON_SUCCESS;
 
 // Macros to use in place of the parameters in the SCHEMA_xxx macros above
 #define REQUIRED(name, type) "\"" #name "\":{\"type\":\"" #type "\"}"
-#define OPTIONAL(name, type) "\"" #name "\":{\"type\":\"" #type "\",\"optional\":true}"
+#define OPTIONAL(name, type) "\"" #name "\":{\"type\":\"" #type "\"}"
 
 // Macros to use in place of the error codes
 #define UNSUPPORTED_ERROR_CODE 3
