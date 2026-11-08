@@ -67,7 +67,7 @@ bool AudioMixer::readyToProgram()
 
 utils::vectorVirtualSink AudioMixer::getActiveStreams()
 {
-    PM_LOG_INFO(MSGID_AUDIO_MIXER, INIT_KVCOUNT,\
+    PM_LOG_DEBUG(\
         "AudioMixer:: getActiveStreams");
     return mActiveStreams;
 }
@@ -593,7 +593,7 @@ bool AudioMixer::setMute(const char* deviceName, const int& mutestatus, LSHandle
 
 bool AudioMixer::muteSink(const int& sink, const int& mutestatus, LSHandle *lshandle, LSMessage *message, void *ctx, PulseCallBackFunc cb)
 {
-    PM_LOG_INFO(MSGID_AUDIO_MIXER, INIT_KVCOUNT, "AudioMixer: muteSink");
+    PM_LOG_DEBUG("AudioMixer: muteSink");
     if (mObjPulseAudioMixer)
         return mObjPulseAudioMixer->muteSink(sink, mutestatus, lshandle, message, ctx, cb);
     else

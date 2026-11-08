@@ -2001,7 +2001,7 @@ void AudioRouter::handleEvent(events::EVENTS_T *event)
     {
         case utils::eEventSinkStatus:
         {
-            PM_LOG_INFO(MSGID_AUDIOROUTER, INIT_KVCOUNT,\
+            PM_LOG_DEBUG(\
                 "handleEvent : eEventSinkStatus");
             events::EVENT_SINK_STATUS_T *stEventSinkStatus = (events::EVENT_SINK_STATUS_T*)event;
             eventSinkStatus(stEventSinkStatus->source, stEventSinkStatus->sink, stEventSinkStatus->audioSink,  \

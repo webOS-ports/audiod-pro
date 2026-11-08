@@ -1100,16 +1100,16 @@ PulseAudioMixer::_pulseStatus(GIOChannel *ch,
             return;
         }
         struct paudiodMsgHdr *msgHdr = (struct paudiodMsgHdr*) buffer;
-        PM_LOG_INFO(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT,"len = %d message type=%x, message ID=%x",msgHdr->msgLen,msgHdr->msgType, msgHdr->msgID);
+        PM_LOG_DEBUG("len = %d message type=%x, message ID=%x",msgHdr->msgLen,msgHdr->msgType, msgHdr->msgID);
 
         switch(msgHdr->msgType)
         {
             case PAUDIOD_REPLY_MSGTYPE_POLICY:
             {
-                PM_LOG_INFO(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT,\
+                PM_LOG_DEBUG(\
                     "PulseAudioMixer::_pulseStatus: received command PAUDIOD_REPLY_MSGTYPE_POLICY");
                 struct paReplyToPolicySet *sndHdr  = (paReplyToPolicySet*)(buffer+HdrLen);
-                PM_LOG_INFO(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT,\
+                PM_LOG_DEBUG(\
                     "recieved subcommand %d",sndHdr->Type);
                 switch(sndHdr->Type)
                 {
@@ -1228,7 +1228,7 @@ PulseAudioMixer::_pulseStatus(GIOChannel *ch,
                 PM_LOG_INFO(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT,\
                     "PulseAudioMixer::_pulseStatus: received command PAUDIOD_REPLY_MSGTYPE_ROUTING");
                 struct paReplyToRoutingSet *sndHdr  = (paReplyToRoutingSet*)(buffer+HdrLen);
-                PM_LOG_INFO(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT,\
+                PM_LOG_DEBUG(\
                     "recieved subcommand %d",sndHdr->Type);
                 switch (sndHdr->Type)
                 {
@@ -1276,7 +1276,7 @@ PulseAudioMixer::_pulseStatus(GIOChannel *ch,
             {
 
                 paReplyToAudiod *replyHdr = (paReplyToAudiod*)(buffer+HdrLen);
-                PM_LOG_INFO(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT,\
+                PM_LOG_DEBUG(\
                     "callback from pulseaudio id :%d", replyHdr->id);
                 auto it = mPulseCallBackInfo.find(replyHdr->id);
                 if (it != mPulseCallBackInfo.end())
@@ -1286,12 +1286,12 @@ PulseAudioMixer::_pulseStatus(GIOChannel *ch,
                     if (fun)
                         fun(cbk.lshandle, cbk.message, cbk.ctx, true);
                     else
-                        PM_LOG_INFO(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT, "CallBack function is null");
+                        PM_LOG_DEBUG("CallBack function is null");
                     mPulseCallBackInfo.erase(replyHdr->id);
                 }
                 else
                 {
-                    PM_LOG_INFO(MSGID_PULSEAUDIO_MIXER, INIT_KVCOUNT, "CallBack map cannot find the entry");
+                    PM_LOG_DEBUG("CallBack map cannot find the entry");
                 }
 
             }

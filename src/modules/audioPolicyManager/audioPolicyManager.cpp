@@ -59,7 +59,7 @@ void AudioPolicyManager::eventSinkStatus(const std::string& source, const std::s
                 elements.mixerType = mixerType;
                 priority = elements.priority;
                 elements.isStreamActive = (sinkStatus == utils::eSinkOpened) ? true : false;
-                PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT,\
+                PM_LOG_DEBUG(\
                     "mixertype set %d",elements.mixerType);
                 break;
             }
@@ -220,7 +220,7 @@ void AudioPolicyManager::addSinkInput(const std::string &trackId, const int &sin
     }
     else
     {
-        PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT,\
+        PM_LOG_DEBUG(\
             "TrackId NOT FOUND, create new entry in default list");
 
         utils::TRACK_VOLUME_INFO_T stAppVolumeInfo;
@@ -258,7 +258,7 @@ void AudioPolicyManager::removeSinkInput(const std::string &trackId, const int &
     }
     else
     {
-        PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT,\
+        PM_LOG_DEBUG(\
             "trackId NOT FOUND, checking in default list");
 
         std::vector<utils::TRACK_VOLUME_INFO_T> &vec = mTrackVolumeInfo[DEFAULT_TRACK_ID];
@@ -453,7 +453,7 @@ void AudioPolicyManager::printActivePolicyInfo()
 
 std::string AudioPolicyManager::getStreamType(EVirtualAudioSink audioSink)
 {
-    PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT,\
+    PM_LOG_DEBUG(\
         "AudioPolicyManager: getStreamType:%d", (int)audioSink);
      utils::itMapSinkToStream it = mSinkToStream.find(audioSink);
      if (it != mSinkToStream.end())
@@ -464,7 +464,7 @@ std::string AudioPolicyManager::getStreamType(EVirtualAudioSink audioSink)
 
 std::string AudioPolicyManager::getStreamType(EVirtualSource audioSource)
 {
-    PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT,\
+    PM_LOG_DEBUG(\
         "AudioPolicyManager: getStreamType:%d", (int)audioSource);
      utils::itMapSourceToStream it = mSourceToStream.find(audioSource);
      if (it != mSourceToStream.end())
@@ -503,7 +503,7 @@ bool AudioPolicyManager::getStreamActiveStatus(const std::string& streamType)
 
 EVirtualAudioSink AudioPolicyManager::getSinkType(const std::string& streamType)
 {
-    PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT,\
+    PM_LOG_DEBUG(\
         "AudioPolicyManager: getSinkType:%s", streamType.c_str());
      utils::itMapStreamToSink it = mStreamToSink.find(streamType);
      if (it != mStreamToSink.end())
@@ -871,18 +871,18 @@ bool AudioPolicyManager::storeTrackVolume(const std::string &trackId, const int 
 
 void AudioPolicyManager::printTrackVolumeInfo()
 {
-    PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT, "AudioPolicyManager::printTrackVolumeInfo");
-    PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT, "****************************************");
+    PM_LOG_DEBUG("AudioPolicyManager::printTrackVolumeInfo");
+    PM_LOG_DEBUG("****************************************");
     for (const auto& it : mTrackVolumeInfo)
     {
-        PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT, "mTrackVolumeInfo: trackId:%s", it.first.c_str());
+        PM_LOG_DEBUG("mTrackVolumeInfo: trackId:%s", it.first.c_str());
         for (const auto& volumeInfo : it.second)
         {
-            PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT, "audioSink:%d volume:%d sinkInputIndex:%d", (int)volumeInfo.audioSink, volumeInfo.volume, volumeInfo.sinkInputIndex);
+            PM_LOG_DEBUG("audioSink:%d volume:%d sinkInputIndex:%d", (int)volumeInfo.audioSink, volumeInfo.volume, volumeInfo.sinkInputIndex);
         }
-        PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT, "-----------------------------------------");
+        PM_LOG_DEBUG("-----------------------------------------");
     }
-    PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT, "****************************************");
+    PM_LOG_DEBUG("****************************************");
 }
 
 bool AudioPolicyManager::setTrackVolume(const std::string& trackId, const int &volume, LSHandle *lshandle, LSMessage *message, void *ctx, PulseCallBackFunc cb, bool ramp)
@@ -989,7 +989,7 @@ bool AudioPolicyManager::setVolume(EVirtualAudioSink audioSink, const int& volum
 
 std::string AudioPolicyManager::getCategory(const std::string& streamType)
 {
-    PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT,\
+    PM_LOG_DEBUG(\
         "AudioPolicyManager:getCategory streamType:%s", streamType.c_str());
     for (const auto &elements : mVolumePolicyInfo)
     {
@@ -1001,7 +1001,7 @@ std::string AudioPolicyManager::getCategory(const std::string& streamType)
 
 std::string AudioPolicyManager::getCategoryOfSource(const std::string& streamType)
 {
-    PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT,\
+    PM_LOG_DEBUG(\
         "AudioPolicyManager:getCategoryOfSource streamType:%s", streamType.c_str());
     for (auto &elements : mSourceVolumePolicyInfo)
     {
@@ -1044,7 +1044,7 @@ bool AudioPolicyManager::isHighPrioritySourceActive(const int& policyPriority, u
 
 int AudioPolicyManager::getCurrentVolume(const std::string& streamType)
 {
-    PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT,\
+    PM_LOG_DEBUG(\
         "AudioPolicyManager:getCurrentVolume streamType:%s", streamType.c_str());
     for (const auto &elements : mVolumePolicyInfo)
     {
@@ -1122,7 +1122,7 @@ bool AudioPolicyManager::getPolicyStatusOfSource(const std::string& streamType)
 
 int AudioPolicyManager::getPriority(const std::string& streamType)
 {
-    PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT,\
+    PM_LOG_DEBUG(\
         "AudioPolicyManager:getPriority streamType:%s", streamType.c_str());
     for (const auto &elements : mVolumePolicyInfo)
     {
@@ -1249,7 +1249,7 @@ int AudioPolicyManager::getCurrentSinkMuteStatus(const std::string &streamType)
             break;
         }
     }
-    PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT,\
+    PM_LOG_DEBUG(\
         "getCurrentSinkMuteStatus %s : %d", streamType.c_str(), (int)muteStatus);
     return (int)muteStatus;
 }
@@ -1296,7 +1296,7 @@ bool AudioPolicyManager::isRampPolicyActiveForSource(const std::string& streamTy
 
 bool AudioPolicyManager::muteSink(EVirtualAudioSink audioSink, const int& muteStatus, utils::EMIXER_TYPE mixerType, LSHandle *lshandle, LSMessage *message, void *ctx, PulseCallBackFunc cb)
 {
-    PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT, "AudioPolicyManager:muteSink:%d for sink:%d, \
+    PM_LOG_DEBUG("AudioPolicyManager:muteSink:%d for sink:%d, \
      mixerType = %d", muteStatus, (int)audioSink, (int)mixerType);
     bool returnStatus = false;
     /* The user's mute (or whoever asked), or the call's: a stream opening
@@ -2130,7 +2130,7 @@ std::string AudioPolicyManager::getStreamStatus(const std::string& streamType, b
     finalString = pbnjson::JObject{{"streamObject", streamObjectArray}};
     finalString.put("returnValue", true);
     finalString.put("subscribed", subscribed);
-    PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT, \
+    PM_LOG_DEBUG(\
                 "getStreamStatus returning payload = %s", finalString.stringify().c_str());
     return finalString.stringify();
 }
@@ -2283,7 +2283,7 @@ std::string AudioPolicyManager::getStreamStatus(bool subscribed)
     finalString = pbnjson::JObject{{"streamObject", streamObjectArray}};
     finalString.put("returnValue", true);
     finalString.put("subscribed", subscribed);
-    PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT, \
+    PM_LOG_DEBUG(\
                 "getStreamStatus returning payload = %s", finalString.stringify().c_str());
     return finalString.stringify();
 }
@@ -2456,7 +2456,7 @@ bool AudioPolicyManager::_muteSource(LSHandle *lshandle, LSMessage *message, voi
 
 void AudioPolicyManager::notifyGetStreamStatusSubscribers(const std::string& payload) const
 {
-    PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT, \
+    PM_LOG_DEBUG(\
                "AudioPolicyManager notifyGetStreamStatusSubscribers with payload = %s", payload.c_str());
     CLSError lserror;
     LSHandle *lsHandle = GetPalmService();
@@ -3171,7 +3171,7 @@ void AudioPolicyManager::handleEvent(events::EVENTS_T *event)
     {
         case utils::eEventSinkStatus:
         {
-            PM_LOG_INFO(MSGID_POLICY_MANAGER, INIT_KVCOUNT,\
+            PM_LOG_DEBUG(\
                     "handleEvent:: eEventSinkStatus");
             events::EVENT_SINK_STATUS_T *sinkStatusEvent = (events::EVENT_SINK_STATUS_T*)event;
             eventSinkStatus(sinkStatusEvent->source, sinkStatusEvent->sink, sinkStatusEvent->audioSink, sinkStatusEvent->sinkStatus, sinkStatusEvent->mixerType,sinkStatusEvent->sinkIndex, \
