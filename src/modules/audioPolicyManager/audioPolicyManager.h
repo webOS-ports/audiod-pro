@@ -63,6 +63,8 @@ class AudioPolicyManager : public ModuleInterface
         void readDuckDepth(const pbnjson::JValue &config);
         static gboolean duckRampStep(gpointer data);
         int duckedVolume(EVirtualAudioSink audioSink, int volume);
+        //! volume, with ownVolume the stream's own: DuckPolicy::loweredVolume.
+        int duckedVolume(EVirtualAudioSink audioSink, int volume, int ownVolume);
         /* A call is up: the media classes are muted on top of the user's
          * mute (callMediaMute.h). Every mute sent to the mixer goes through
          * muteSink(), which adds it. */
