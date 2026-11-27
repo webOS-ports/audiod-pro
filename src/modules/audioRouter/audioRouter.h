@@ -105,6 +105,9 @@ class AudioRouter : public ModuleInterface
         /* Stream classes that go elsewhere than the rest of the display's
          * while a given output is in use: see setClassOverride(). */
         ClassRoute::Override mClassOverride;
+        /* Classes taken off one sink for another whatever sent them there:
+         * see setCallRedirect(). */
+        ClassRoute::Redirect mCallRedirect;
         utils::mapSoundDevicesInfo mSoundOutputDeviceInfo;
         utils::mapSoundDevicesInfo mSoundInputDeviceInfo;
 
@@ -168,6 +171,11 @@ class AudioRouter : public ModuleInterface
          * override.classes go to override.target instead (an empty override
          * ends that). Takes effect at once: the displays are routed again. */
         void setClassOverride(const ClassRoute::Override &override);
+
+        /* redirect's classes that the routing sends to redirect.from go to
+         * redirect.to instead, on top of the output and the class override
+         * (an inactive redirect ends that). Takes effect at once. */
+        void setCallRedirect(const ClassRoute::Redirect &redirect);
 
         //luna api
         static bool _setSoundOutput(LSHandle *lshandle, LSMessage *message, void *ctx);

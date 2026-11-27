@@ -35,6 +35,7 @@
 #include "ringState.h"
 #include "usbRing.h"
 #include "btRing.h"
+#include "voipRoute.h"
 #include "storedSetting.h"
 #include "settingsRequest.h"
 #include "paReconnect.h"
@@ -385,6 +386,13 @@ class PalmLegacyManager : public ModuleInterface, private HfpAgent::Listener,
         static void paUsbRingDropSinkCb(pa_context *c, const pa_sink_info *info, int eol, void *userdata);
         static void paUsbRingDropInputCb(pa_context *c, const pa_sink_input_info *info, int eol,
                                          void *userdata);
+        /* The sink under pcm_output (its device.master_device), "" until
+         * PulseAudio has named it: a VoIP call plays there, at the call
+         * volume alone (see voipRoute.h). */
+        std::string mSpeakerMaster;
+        /* The router's call redirect in line with the call mode and
+         * mSpeakerMaster. */
+        void syncCallRoute();
         bool jackPlugged() const
         {
             return mJackState == eJack_Headphones || mJackState == eJack_Headset;

@@ -67,6 +67,30 @@ namespace ClassRoute
      * classes it moves. A range that is empty (start > end) is passed on
      * as it is. */
     std::vector<Range> split(int start, int end, const std::string &output, const Override &override);
+
+    /* Classes headed for one sink sent to another instead, whichever output
+     * or override sent them there: during a VoIP call, the call's classes
+     * that would play through pcm_output play on the sink under it, so the
+     * master volume (pcm_output's own) does not turn the call down too. */
+    struct Redirect
+    {
+        //! The sink the classes are taken off.
+        std::string from;
+        //! The sink they go to instead.
+        std::string to;
+        std::vector<int> classes;
+
+        bool active() const { return !from.empty() && !to.empty() && from != to && !classes.empty(); }
+        bool operator==(const Redirect &o) const
+        {
+            return from == o.from && to == o.to && classes == o.classes;
+        }
+    };
+
+    /* runs with redirect's classes that go to redirect.from sent to
+     * redirect.to instead, split where needed; neighbours going the same way
+     * are one run again. An inactive redirect leaves runs as they are. */
+    std::vector<Range> redirect(const std::vector<Range> &runs, const Redirect &redirect);
 }
 
 #endif // _CLASS_ROUTE_H
