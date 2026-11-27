@@ -87,3 +87,9 @@ double CallVolume::halVoiceVolume(int volume)
      * that reaches the last index. */
     return level / 100.0 + 0.5 * kStep / 100.0;
 }
+
+int CallVolume::voipStreamVolume(int volume)
+{
+    const int level = snap(volume);
+    return level > 0 ? level : kVoipQuietest;
+}

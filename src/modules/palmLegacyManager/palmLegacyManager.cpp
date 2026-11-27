@@ -2619,12 +2619,14 @@ void PalmLegacyManager::applyCallVolume()
     {
         const LegacyCategory *phone = categoryByName("/phone");
         AudioPolicyManager *policy = AudioPolicyManager::getAudioPolicyManagerInstance();
+        const int streamVolume = CallVolume::voipStreamVolume(volume);
         if (phone && phone->streamType && policy &&
-            policy->getStreamVolume(phone->streamType) != volume)
+            policy->getStreamVolume(phone->streamType) != streamVolume)
         {
             PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
-                "Call volume %s %d (%s)", CallVolume::name(route), volume, phone->streamType);
-            policy->setStreamVolume(phone->streamType, volume);
+                "Call volume %s %d (%s at %d)", CallVolume::name(route), volume,
+                phone->streamType, streamVolume);
+            policy->setStreamVolume(phone->streamType, streamVolume);
         }
     }
 }

@@ -166,3 +166,22 @@ TEST(CallVolume, TheHalValueSurvivesPulseAudiosRoundTrip)
         EXPECT_EQ(mtkIndex(back), mtkIndex(linear)) << v;
     }
 }
+
+TEST(CallVolume, AVoipCallIsNeverSilencedByTheQuietestLevel)
+{
+    // module-palm-policy mutes a stream at 0 %: the quietest level plays
+    // just above that instead, the others as they are.
+    EXPECT_EQ(CallVolume::voipStreamVolume(0), CallVolume::kVoipQuietest);
+    EXPECT_GT(CallVolume::kVoipQuietest, 0);
+    EXPECT_LT(CallVolume::kVoipQuietest, CallVolume::kStep);
+    for (int v = CallVolume::kStep; v <= 100; v += CallVolume::kStep)
+        EXPECT_EQ(CallVolume::voipStreamVolume(v), v) << v;
+    // Rising with the call volume, never back down.
+    int previous = 0;
+    for (int v = 0; v <= 100; v++)
+    {
+        EXPECT_GE(CallVolume::voipStreamVolume(v), previous) << v;
+        previous = CallVolume::voipStreamVolume(v);
+    }
+}
+
