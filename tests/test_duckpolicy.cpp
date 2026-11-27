@@ -145,6 +145,44 @@ TEST(DuckPolicy, AQuietStreamStaysAudible)
     EXPECT_EQ(DuckPolicy::duckedVolume(0, 50), 0);
 }
 
+// The volume policy holds the music at its policyVolume (50) while a
+// ringtone or alert plays - the same stream that ducks it. The two lowered
+// it twice: 50, less the 50 steps of a -20 dB duck, came to 1 (-48 dB),
+// and the music all but stopped under an alarm.
+TEST(DuckPolicy, AMusicHeldDownByThePolicyIsNotLoweredTwice)
+{
+    // own volume 100 ducked by 50 steps is 50; the policy's 50 is no lower
+    EXPECT_EQ(DuckPolicy::loweredVolume(50, 100, 50), 50);
+}
+
+TEST(DuckPolicy, TheLowerOfThePolicyAndTheDuckWins)
+{
+    // a deeper duck goes under the policy volume
+    EXPECT_EQ(DuckPolicy::loweredVolume(50, 100, 70), 30);
+    // a shallower one leaves the policy volume as it is
+    EXPECT_EQ(DuckPolicy::loweredVolume(50, 100, 20), 50);
+}
+
+TEST(DuckPolicy, AMusicAtItsOwnVolumeIsDuckedFromIt)
+{
+    EXPECT_EQ(DuckPolicy::loweredVolume(100, 100, 50), 50);
+    EXPECT_EQ(DuckPolicy::loweredVolume(80, 80, 50), 30);
+    // turned up past the volume it had: ducked from the new one
+    EXPECT_EQ(DuckPolicy::loweredVolume(90, 80, 50), 40);
+}
+
+TEST(DuckPolicy, WithoutADuckTheVolumeIsLeftAlone)
+{
+    EXPECT_EQ(DuckPolicy::loweredVolume(50, 100, 0), 50);
+    EXPECT_EQ(DuckPolicy::loweredVolume(100, 100, 0), 100);
+}
+
+TEST(DuckPolicy, AMutedMusicStaysMuted)
+{
+    EXPECT_EQ(DuckPolicy::loweredVolume(0, 100, 50), 0);
+    EXPECT_EQ(DuckPolicy::loweredVolume(0, 0, 50), 0);
+}
+
 TEST(DuckPolicy, AnAlertWaitsForTheWholeRampWhenTheMusicIsUp)
 {
     // Six steps of 30 ms, and one more for the mixer to report the stream.
