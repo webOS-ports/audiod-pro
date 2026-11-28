@@ -937,6 +937,9 @@ bool AudioPolicyManager::setVolume(EVirtualAudioSink audioSink, const int& volum
     {
         if (utils::ePulseMixer == mixerType)
         {
+            // The stream's own volume: what volume is, when the volume
+            // policy is not holding it down (see DuckPolicy::loweredVolume).
+            const int ownVolume = getCurrentVolume(getStreamType(audioSink));
             for (const auto& items:mTrackVolumeInfo)
             {
                 for(const auto& elements:items.second)
@@ -944,18 +947,21 @@ bool AudioPolicyManager::setVolume(EVirtualAudioSink audioSink, const int& volum
                     if(elements.audioSink == audioSink)
                     {
                         int effectiveVolume;
+                        int effectiveOwnVolume;
                         if (items.first == DEFAULT_TRACK_ID)
                         {
                             //setting volume for unregistered tracks
                             PM_LOG_DEBUG("AudioPolicyManager : programTrackVolume: trackId not set, use default track volume");
                             effectiveVolume = (MAX_VOLUME * volume)/100;
+                            effectiveOwnVolume = (MAX_VOLUME * ownVolume)/100;
                         }
                         else
                         {
                             PM_LOG_DEBUG("AudioPolicyManager : programTrackVolume: trackId found, use actuial track volume");
                             effectiveVolume = (elements.volume * volume)/100;
+                            effectiveOwnVolume = (elements.volume * ownVolume)/100;
                         }
-                        effectiveVolume = duckedVolume(audioSink, effectiveVolume);
+                        effectiveVolume = duckedVolume(audioSink, effectiveVolume, effectiveOwnVolume);
                         PM_LOG_DEBUG("AudioPolicyManager : programTrackVolume:  trackId:%s, effective vol : %d, sink : %d, sinkindex:%d",
                             items.first.c_str(),effectiveVolume, (int)audioSink, elements.sinkInputIndex);
                         returnStatus = mObjAudioMixer->programTrackVolume(audioSink, elements.sinkInputIndex, effectiveVolume, lshandle, message, ctx, cb);
@@ -1514,9 +1520,14 @@ void AudioPolicyManager::setRingerOn(bool ringerOn)
 
 int AudioPolicyManager::duckedVolume(EVirtualAudioSink audioSink, int volume)
 {
+    return duckedVolume(audioSink, volume, volume);
+}
+
+int AudioPolicyManager::duckedVolume(EVirtualAudioSink audioSink, int volume, int ownVolume)
+{
     if (!DuckPolicy::isDuckable(getStreamType(audioSink)))
         return volume;
-    return DuckPolicy::duckedVolume(volume, mDuckLevel);
+    return DuckPolicy::loweredVolume(volume, ownVolume, mDuckLevel);
 }
 
 unsigned AudioPolicyManager::duckLeadInMs(const std::string &streamType) const

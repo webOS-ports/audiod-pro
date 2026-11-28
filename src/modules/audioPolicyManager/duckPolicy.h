@@ -82,6 +82,19 @@ namespace DuckPolicy
     //! audible, at 1 at least.
     int duckedVolume(int volume, int level);
 
+    //! What the music is set to when volume is asked for and its own
+    //! volume is ownVolume, with the music level steps down. At or above
+    //! its own volume it is ducked from volume. Held below it - the volume
+    //! policy holds the music at its policyVolume while an alert or
+    //! ringtone plays, the very streams that duck it - it is the lower of
+    //! the two, not the one lowered by the other: both at once took the
+    //! music to the floor of the volume table (-48 dB) under an alarm.
+    //! (The user's own volume reaches the mixer before it is stored as
+    //! ownVolume, so turning the music down while it is ducked takes effect
+    //! when the duck ends; turning it up, at once. Clock snoozes on a volume
+    //! key, so an alarm seldom sees this.)
+    int loweredVolume(int volume, int ownVolume, int level);
+
     //! How long a sound on streamType waits before its samples start, so
     //! that it starts against music that is already down: the time the ramp
     //! still needs from currentLevel, plus one step for the mixer to report

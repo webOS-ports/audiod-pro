@@ -77,6 +77,13 @@ int duckedVolume(int volume, int level)
     return std::max(volume - level, 1);
 }
 
+int loweredVolume(int volume, int ownVolume, int level)
+{
+    if (volume >= ownVolume || volume <= 0)
+        return duckedVolume(volume, level);
+    return std::min(volume, duckedVolume(ownVolume, level));
+}
+
 unsigned leadInMs(const std::string &streamType, bool ringerOn,
                   int currentLevel, int duckLevel)
 {
