@@ -960,6 +960,10 @@ void PalmLegacyManager::paContextStateCb(pa_context *c, void *userdata)
              * send the ringtones to it once PulseAudio is back. */
             self->mUsbRing.paGone();
             self->syncUsbRing();
+            /* The sink under pcm_output is named again by the new
+             * connection's sink walk. */
+            self->mSpeakerMaster.clear();
+            self->syncCallRoute();
             PM_LOG_ERROR(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
                 "Lost the PulseAudio connection; call routing is suspended");
             self->schedulePaReconnect();
@@ -1571,6 +1575,21 @@ void PalmLegacyManager::paJackSinkCb(pa_context *c, const pa_sink_info *info, in
     if (!self || eol || !info)
         return;
 
+    /* The sink a VoIP call is played on instead of pcm_output. */
+    if (info->name && !strcmp(info->name, VoipRoute::SPEAKER))
+    {
+        const char *master = pa_proplist_gets(info->proplist, PA_PROP_DEVICE_MASTER_DEVICE);
+        const std::string speakerMaster = master ? master : "";
+        if (speakerMaster != self->mSpeakerMaster)
+        {
+            PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
+                "%s plays on %s", VoipRoute::SPEAKER,
+                speakerMaster.empty() ? "(no master sink)" : speakerMaster.c_str());
+            self->mSpeakerMaster = speakerMaster;
+            self->syncCallRoute();
+        }
+    }
+
     const pa_sink_port_info *headset = nullptr, *headphone = nullptr;
 
     for (uint32_t i = 0; i < info->n_ports; i++)
@@ -1812,6 +1831,13 @@ void PalmLegacyManager::syncUsbRing()
     AudioRouter *router = AudioRouter::getAudioRouterInstance();
     if (router)
         router->setClassOverride(override);
+}
+
+void PalmLegacyManager::syncCallRoute()
+{
+    AudioRouter *router = AudioRouter::getAudioRouterInstance();
+    if (router)
+        router->setCallRedirect(VoipRoute::callRedirect(mCallMode, mSpeakerMaster));
 }
 
 void PalmLegacyManager::paUsbRingLoadedCb(pa_context *, uint32_t idx, void *userdata)
@@ -2391,6 +2417,9 @@ void PalmLegacyManager::updateCallMode()
      * Bluetooth headset leaves them on; its end puts them back. */
     syncUsbRing();
 
+    /* A VoIP call plays under the master volume, not through it. */
+    syncCallRoute();
+
     /* The SCO link first: effectiveRoute() only puts the call on the
      * headset once the link is up, and a link no longer wanted is closed
      * after the call has been moved off it below. */
@@ -2590,12 +2619,14 @@ void PalmLegacyManager::applyCallVolume()
     {
         const LegacyCategory *phone = categoryByName("/phone");
         AudioPolicyManager *policy = AudioPolicyManager::getAudioPolicyManagerInstance();
+        const int streamVolume = CallVolume::voipStreamVolume(volume);
         if (phone && phone->streamType && policy &&
-            policy->getStreamVolume(phone->streamType) != volume)
+            policy->getStreamVolume(phone->streamType) != streamVolume)
         {
             PM_LOG_INFO(MSGID_PALM_LEGACY_MANAGER, INIT_KVCOUNT,
-                "Call volume %s %d (%s)", CallVolume::name(route), volume, phone->streamType);
-            policy->setStreamVolume(phone->streamType, volume);
+                "Call volume %s %d (%s at %d)", CallVolume::name(route), volume,
+                phone->streamType, streamVolume);
+            policy->setStreamVolume(phone->streamType, streamVolume);
         }
     }
 }

@@ -163,8 +163,11 @@ bool AudioRouter::routeRange(const utils::SINK_ROUTING_INFO_T &sinkInfo, const s
     if (nullptr == mObjAudioMixer)
         return false;
     bool routed = true;
-    for (const ClassRoute::Range &run : ClassRoute::split(sinkInfo.startSink, sinkInfo.endSink,
-                                                          outputDevice, mClassOverride))
+    const std::vector<ClassRoute::Range> runs =
+        ClassRoute::redirect(ClassRoute::split(sinkInfo.startSink, sinkInfo.endSink,
+                                               outputDevice, mClassOverride),
+                             mCallRedirect);
+    for (const ClassRoute::Range &run : runs)
     {
         const bool ok = mObjAudioMixer->setSoundOutputOnRange(EVirtualAudioSink(run.start),
                                                               EVirtualAudioSink(run.end), run.sink.c_str());
@@ -187,6 +190,18 @@ void AudioRouter::setClassOverride(const ClassRoute::Override &override)
         override.target.empty() ? "(none)" : override.target.c_str(),
         override.whileOutput.empty() ? "(none)" : override.whileOutput.c_str());
     mClassOverride = override;
+    routeToChosen();
+}
+
+void AudioRouter::setCallRedirect(const ClassRoute::Redirect &redirect)
+{
+    if (redirect == mCallRedirect)
+        return;
+    PM_LOG_INFO(MSGID_AUDIOROUTER, INIT_KVCOUNT,
+        "call redirect: %zu classes from %s to %s", redirect.classes.size(),
+        redirect.from.empty() ? "(none)" : redirect.from.c_str(),
+        redirect.to.empty() ? "(none)" : redirect.to.c_str());
+    mCallRedirect = redirect;
     routeToChosen();
 }
 
@@ -1334,8 +1349,9 @@ bool AudioRouter::setSoundOutput(const std::string& soundOutput, const int &disp
                         PM_LOG_INFO(MSGID_AUDIOROUTER, INIT_KVCOUNT, "setSoundOutput: Device not connected");
                         returnStatus = true;
                     }
-                    else if (mObjAudioMixer->setSoundOutputOnRange(sinkInfo.startSink, sinkInfo.endSink,
-                        outputDevice.c_str()))
+                    /* Through routeRange(), so the class override and the
+                     * call redirect hold for a chosen output too. */
+                    else if (routeRange(sinkInfo, outputDevice))
                     {
                         updateDeviceStatus(display, soundOutput, true, true, true);
                         updateDeviceStatus(display, activeDevice, true, false, true);

@@ -70,4 +70,65 @@ TEST(ClassRoute, AnEmptyOverrideIsInactive)
     EXPECT_TRUE(usbOverride({1}).active());
 }
 
+// A call's classes taken off one sink for another, whatever sent them there.
+
+ClassRoute::Redirect callRedirect(const std::vector<int> &classes)
+{
+    return ClassRoute::Redirect{"pcm_output", "sink.primary_output", classes};
+}
+
+TEST(ClassRoute, ARedirectMovesItsClassesOffItsSink)
+{
+    const std::vector<ClassRoute::Range> runs{{0, 5, "pcm_output"}};
+    EXPECT_EQ(ClassRoute::redirect(runs, callRedirect({2, 3})),
+              (std::vector<ClassRoute::Range>{{0, 1, "pcm_output"},
+                                              {2, 3, "sink.primary_output"},
+                                              {4, 5, "pcm_output"}}));
+}
+
+TEST(ClassRoute, ARedirectLeavesOtherSinksAlone)
+{
+    /* With the call's classes in a USB headset, the headset keeps them. */
+    const std::vector<ClassRoute::Range> runs{{0, 5, "usb_speaker0"}};
+    EXPECT_EQ(ClassRoute::redirect(runs, callRedirect({2, 3})), runs);
+}
+
+TEST(ClassRoute, ARedirectFollowsAnOverride)
+{
+    /* A Bluetooth headset's override keeps a VoIP call on pcm_output; the
+     * redirect takes it from there. */
+    const auto split = ClassRoute::split(0, 5, "bt_sink",
+                                         ClassRoute::Override{"bt_sink", "pcm_output", {2, 3}});
+    EXPECT_EQ(ClassRoute::redirect(split, callRedirect({3})),
+              (std::vector<ClassRoute::Range>{{0, 1, "bt_sink"},
+                                              {2, 2, "pcm_output"},
+                                              {3, 3, "sink.primary_output"},
+                                              {4, 5, "bt_sink"}}));
+}
+
+TEST(ClassRoute, ARedirectJoinsNeighboursGoingTheSameWay)
+{
+    const std::vector<ClassRoute::Range> runs{{0, 1, "pcm_output"}, {2, 3, "sink.primary_output"}};
+    EXPECT_EQ(ClassRoute::redirect(runs, callRedirect({1})),
+              (std::vector<ClassRoute::Range>{{0, 0, "pcm_output"},
+                                              {1, 3, "sink.primary_output"}}));
+}
+
+TEST(ClassRoute, AnInactiveRedirectChangesNothing)
+{
+    const std::vector<ClassRoute::Range> runs{{0, 5, "pcm_output"}};
+    EXPECT_EQ(ClassRoute::redirect(runs, ClassRoute::Redirect{}), runs);
+    EXPECT_FALSE((ClassRoute::Redirect{"pcm_output", "", {1}}).active());
+    EXPECT_FALSE((ClassRoute::Redirect{"", "sink.primary_output", {1}}).active());
+    EXPECT_FALSE((ClassRoute::Redirect{"pcm_output", "pcm_output", {1}}).active());
+    EXPECT_FALSE(callRedirect({}).active());
+    EXPECT_TRUE(callRedirect({1}).active());
+}
+
+TEST(ClassRoute, ARedirectPassesAnEmptyRangeOn)
+{
+    const std::vector<ClassRoute::Range> runs{{5, 4, "pcm_output"}};
+    EXPECT_EQ(ClassRoute::redirect(runs, callRedirect({4, 5})), runs);
+}
+
 }

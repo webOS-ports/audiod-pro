@@ -138,6 +138,7 @@ SET (modules_files
         src/modules/palmLegacyManager/hfpAgent.cpp
         src/modules/palmLegacyManager/usbRing.cpp
         src/modules/palmLegacyManager/btRing.cpp
+        src/modules/palmLegacyManager/voipRoute.cpp
         src/modules/palmLegacyManager/settingsRequest.cpp
         src/modules/palmLegacyManager/legacyRequest.cpp
         src/modules/palmLegacyManager/callVolume.cpp

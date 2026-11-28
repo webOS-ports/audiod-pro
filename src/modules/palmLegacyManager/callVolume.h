@@ -105,6 +105,18 @@ public:
     //! A HAL that does scale the call gets close to the percentage itself.
     static double halVoiceVolume(int volume);
 
+    //! The volume a VoIP call's voipcall stream is given for a call volume,
+    //! a percentage of module-palm-policy's volume curve.
+    //!
+    //! That curve (_mapPercentToPulseRamp, table 0) mutes 0 outright
+    //! (PA_DECIBEL_MININFTY), so the quietest level would silence the call,
+    //! which the call volume never does. It goes to kVoipQuietest instead:
+    //! -39.6 dB on that curve, about the 8 dB below level 20 (-32.3 dB) that
+    //! every other level is below the next. The other levels are the
+    //! percentage as it is.
+    static int voipStreamVolume(int volume);
+    static constexpr int kVoipQuietest = 2;
+
 private:
     static size_t index(Route route);
 

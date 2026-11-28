@@ -40,4 +40,30 @@ std::vector<Range> split(int start, int end, const std::string &output, const Ov
     return runs;
 }
 
+std::vector<Range> redirect(const std::vector<Range> &runs, const Redirect &redirect)
+{
+    if (!redirect.active())
+        return runs;
+
+    std::vector<Range> out;
+    for (const Range &run : runs)
+    {
+        for (int c = run.start; c <= run.end; c++)
+        {
+            const bool moved = run.sink == redirect.from &&
+                               std::find(redirect.classes.begin(), redirect.classes.end(), c)
+                               != redirect.classes.end();
+            const std::string &sink = moved ? redirect.to : run.sink;
+            if (!out.empty() && out.back().sink == sink && out.back().end == c - 1)
+                out.back().end = c;
+            else
+                out.push_back(Range{c, c, sink});
+        }
+        /* An empty range is passed on as split() passes it on. */
+        if (run.start > run.end)
+            out.push_back(run);
+    }
+    return out;
+}
+
 }
